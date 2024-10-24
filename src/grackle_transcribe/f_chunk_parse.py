@@ -5,35 +5,54 @@
 #
 
 from enum import Enum, auto
+from functools import partial
 import re
-from typing import List, NamedTuple, Optional, Tuple, Union
+from typing import Any, Callable, List, NamedTuple, Optional, Tuple, Union
+
+def _attr_check(token, attr, matcher):
+    attr_val = getattr(token, attr)
+    if not isinstance(attr_val, str):
+        return False
+    return matcher.match(attr_val) is not None
+
+def _isinstance_check(token, klass):
+    return isinstance(token.type, klass)
 
 class _ClassifyReq:
     # we only use regex for case insensitivity (we could get around this by
     # creating more types of tokens, but I think this is the simpler way to
     # do it)
-    leading_tok_l: list[Union[re.Pattern, Tuple[str,re.Pattern]]]
+    leading_tok_l: list[Union[Callable]]
     final_tok_str: Optional[re.Pattern] = None
     max_len: Optional[int]
     min_len: Optional[int]
 
     def __init__(
         self,
-        leading_tok_l: list[Union[str, Tuple[str,str]]],
+        leading_tok_l: list[Union[str, Tuple[Any,str]]],
         final_tok_str: Optional[str]= None,
         max_len: int = None,
         min_len: int = None
     ):
         assert len(leading_tok_l) > 0
         self.leading_tok_l = []
-        for elem in leading_tok_l:
-            if isinstance(elem, tuple):
-                attr, pattern = elem
-            else:
-                attr, pattern = "string", elem
 
-            flags = re.IGNORECASE if attr == "string" else 0
-            self.leading_tok_l.append((attr, re.compile(pattern, flags)))
+        for elem in leading_tok_l:
+
+            if isinstance(elem, tuple):
+                attr, expected = elem
+            else:
+                attr, expected = "string", elem
+
+            if not isinstance(expected, str):
+                assert attr == 'type'
+                checker = partial(_isinstance_check, klass=expected)
+            else:
+                flags = re.IGNORECASE if attr == "string" else 0
+                matcher = re.compile(expected, flags)
+                checker = partial(_attr_check, attr=attr, matcher=matcher)
+
+            self.leading_tok_l.append(checker)
 
         if final_tok_str is None:
             self.final_tok_pattern = None
@@ -45,14 +64,11 @@ class _ClassifyReq:
 
 
     def tok_matches(self, tok_l):
-        for i, (attr, expected) in enumerate(self.leading_tok_l):
-            try:
-                token = tok_l[i]
-            except IndexError:
+        if len(self.leading_tok_l) > len(tok_l):
+            return False
+        for i, checker in enumerate(self.leading_tok_l):
+            if not checker(tok_l[i]):
                 return False
-            else:
-                if expected.match(getattr(token, attr)) is None:
-                    return False
 
         if ((self.final_tok_pattern is not None) and
             (self.final_tok_pattern.match(tok_l[i].string) is None)):
@@ -65,7 +81,6 @@ class _ClassifyReq:
             return False
 
         return True
-
 
 # the idea is to broadly characterize the chunk kind based on the first
 # token(s) in a chunk and optionally the last token in a chunk
@@ -104,6 +119,29 @@ class ChunkKind(Enum):
 
 # uncategorized will correspond to assignments and built-in procedures (like alloc, format, write)
 
+class Type(Enum):
+    """
+    Represents a type.
+
+    This has been customized to store the regex for each kind
+    """
+
+    def __new__(cls, value, regex_list):
+        obj = object.__new__(cls)
+        obj._value_ = value
+        obj.regex = re.compile(
+            "(" + "|".join([f"({elem})" for elem in regex_list]) + ")",
+            re.IGNORECASE
+        )
+        return obj
+
+    f32 = (0, [r"real", r"real\*4"])
+    f64 = (1, [r"real\*8"])
+    i32 = (2, [r"integer", r"integer\*4"])
+    i64 = (3, [r"integer\*8"])
+    logical = (4, [r"logical"])
+    mask_type = (5, ["mask_type"])
+    gr_float = (6, ["r_prec"])
 
 _reqs = {
     ChunkKind.SubroutineDecl : _ClassifyReq(
@@ -113,7 +151,7 @@ _reqs = {
 
     # declaration related chunks
     ChunkKind.ImplicitNone : None, # it will be a full token match
-    ChunkKind.TypeSpec : _ClassifyReq([("type", "type")]),
+    ChunkKind.TypeSpec : _ClassifyReq([("type", Type)]),
     ChunkKind.Parameter : _ClassifyReq(
         ["parameter", ("type", r"\("), ("type", "arbitrary-name")],
     ),
@@ -195,6 +233,7 @@ _REAL_PATTERN = (
     f'(_{_KIND_PARAM_REGEX})?'
 )
 
+
 def _get_types():
     tmp = [
         "real", r"real\*4", r"real\*8",
@@ -257,11 +296,15 @@ def _make_token_map():
         ("type", _get_types()),
     ]
 
+    all_inputs += [(e, e.regex) for e in Type]
+
     map_entries = []
     for name,pattern in all_inputs:
-        map_entries.append(
-            (name, re.compile(pattern, re.IGNORECASE), False)
-        )
+        if isinstance(pattern, str):
+            matcher = re.compile(pattern, re.IGNORECASE)
+        else:
+            matcher = pattern
+        map_entries.append((name, matcher, False))
 
     meta_inputs = [
         # desperation:
@@ -311,7 +354,7 @@ def scan_chunk(chunk_lines):
 
     tokens = []
 
-    trailing_comment_start = None
+    trailing_comment_start = []
 
     skip_regex = re.compile("[ \t]+")
 
@@ -338,8 +381,7 @@ def scan_chunk(chunk_lines):
                 continue
             elif line[pos] == '!':
                 assert line[pos-1].isspace()
-                assert is_last_line_in_chunk
-                trailing_comment_start = pos
+                trailing_comment_start.append((lineno,pos))
                 break
 
             best_match_type = None
@@ -379,15 +421,23 @@ def scan_chunk(chunk_lines):
                 expect_full_match_token = True
             pos=best_match.end()
 
-        has_label = (
-            (len(tokens) > 1) and
-            (tokens[0].type == "integer-literal") and
-            (len(tokens[0].string) <= 5)
+    has_label = (
+        (len(tokens) > 1) and
+        (tokens[0].type == "integer-literal") and
+        (len(tokens[0].string) <= 5)
+    )
+
+    if expect_full_match_token and len(tokens) != (1+has_label):
+        raise ValueError(
+            "there was a problem parsing line:\n"
+            f"  {line!r}\n"
+            "we expect there to be a single token on the line "
+            "(excluding a label, if present). \n"
+            f"-> has_label: {has_label}\n"
+            f"-> tokens: {tokens}"
         )
 
-        if expect_full_match_token:
-            assert len(tokens) == (1 + has_label)
-        return tokens, trailing_comment_start, has_label
+    return tokens, trailing_comment_start, has_label
 
 
 def process_code_chunk(chunk_lines):

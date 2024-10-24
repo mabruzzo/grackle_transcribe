@@ -6,8 +6,10 @@
 # https://github.com/llvm/llvm-project/blob/main/flang/include/flang/Parser/parse-tree.h
 
 import dataclasses
+import os
 import re
-from typing import List, Optional
+import subprocess
+from typing import List, NamedTuple, Optional
 
 
 class DumpLineReader:
@@ -190,3 +192,45 @@ class NodeTraverser:
         else:
             raise StopIteration
 
+_AUTOGEN_HEADER_DIR = os.path.abspath(os.path.join(
+    os.path.dirname(__file__), "..", "..", "autogen_headers"
+))
+
+class AstCreateConfig(NamedTuple):
+    command: str = "flang-new"
+    autogen_dir: str = _AUTOGEN_HEADER_DIR
+    grackle_src_dir: str = "/Users/mabruzzo/packages/c++/grackle/src"
+
+def create_ast(src_fname, out_fname, double_precision = True, macros = None, *,
+               grackle_src_fname = True, config = AstCreateConfig()):
+
+    clib_path = os.path.join(config.grackle_src_dir, "clib")
+    if grackle_src_fname:
+        src_path = os.path.join(clib_path, src_fname)
+    else:
+        src_path = src_fname
+    assert os.path.isfile(src_path)
+
+    autogen_dir_path = os.path.join(
+        config.autogen_dir, "float8" if double_precision else "float4"
+    )
+
+    args = [
+        config.command,
+        "-fc1",
+        "-fdebug-dump-parse-tree",
+        "-cpp",
+        f"-I{os.path.join(config.grackle_src_dir, 'include')}",
+        f"-I{autogen_dir_path}"
+    ]
+    if not grackle_src_fname:
+        args.append(f"-I{clib_path}")
+    
+    if macros is not None:
+        for macro in macros:
+            args.append(f"-D{macro}")
+    args.append(src_path)
+
+    with open(out_fname, "w") as f:
+        subprocess.run(args, stdout=f, check=True)
+    return out_fname
