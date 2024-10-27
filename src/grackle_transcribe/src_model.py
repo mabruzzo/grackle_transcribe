@@ -4,6 +4,7 @@
 
 from more_itertools import peekable
 from enum import auto, Flag
+from functools import partial
 import re
 from typing import NamedTuple, Optional
 
@@ -17,22 +18,13 @@ class Origin(NamedTuple):
 class SrcItem:
     pass
 
-class WhitespaceLine(SrcItem):
-    # represents an empty line
-    def __init__(self, value = None, *, origin = None):
-        self._value = value
+class WhitespaceLines(SrcItem):
+    # represents empty lines
+    def __init__(self, lines, *, origin = None):
+        self.lines = tuple(lines)
         self.origin = origin
 
-    @property
-    def value(self):
-        if self._value is None:
-            return ''
-        return self._value
-
-    @property
-    def lines(self): return (self.value,)
-
-    def nlines(self): return 1
+    def nlines(self): return len(self.lines)
 
 class PreprocKind(Flag):
     INCLUDE = auto()
@@ -89,7 +81,10 @@ def _build_preproc_match_seq():
         (PreprocKind.ENDIF, re.compile(r"^\s*#\s*endif\s*(/\*.*\*/\s*)*$")),
 
         # define statement
-        (PreprocKind.DEFINE, re.compile(r"^\s*#\s*define\s+(?P<val>.*)$"))
+        (
+            PreprocKind.DEFINE,
+            re.compile(r"^\s*#\s*define\s+(?P<val>[a-zA-Z0-9_]+).*$")
+        )
     )
 
 _PREPROC_LINE_KINDS = _build_preproc_match_seq()
@@ -125,15 +120,12 @@ class PreprocessorDirective(SrcItem):
 
 
 class Comment(SrcItem):
-    # represents a single line
-    def __init__(self, value, *, origin = None):
-        self.value = value
+    # represents 1 or more comment lines
+    def __init__(self, lines, *, origin = None):
+        self.lines = tuple(lines)
         self.origin = origin
 
-    @property
-    def lines(self): return (self.value,)
-
-    def nlines(self): return 1
+    def nlines(self): return len(self.lines)
 
 class OMPDirective(SrcItem):
     # represents an openmp directive
@@ -215,12 +207,6 @@ class LineProvider:
             return False
 
 
-def _try_whitespace(line):
-    if line == '' or line.isspace():
-        return WhitespaceLine(line)
-    return None
-
-
 _OMP_START_STR = r"((\!omp\$)|(\!\$omp))"
 _OMP_CONTINUE_STR = r"((\!omp\$\&)|(\!\$omp\&))"
 _OMP_START_PATTERN = re.compile("^" + _OMP_START_STR, re.IGNORECASE)
@@ -228,8 +214,11 @@ _OMP_CONTINUE_PATTERN = re.compile("^" + _OMP_CONTINUE_STR, re.IGNORECASE)
 _OMP_LEADING_WHITESPACE = re.compile(
     f"^\s+({_OMP_START_STR})|({_OMP_CONTINUE_STR})", re.IGNORECASE
 )
-
+_ALL_OMP_PATTERNS = [
+    _OMP_START_PATTERN, _OMP_CONTINUE_PATTERN, _OMP_LEADING_WHITESPACE
+]
 def _try_omp_directive(line, provider):
+    assert provider is not None
 
     if _OMP_CONTINUE_PATTERN.match(line):
         raise RuntimeError(
@@ -248,14 +237,40 @@ def _try_omp_directive(line, provider):
     return None
 
 _COMMENT_PATTERN = re.compile(r"^[\*cCdD]|(^\s*\!)")
-def _try_comment(line):
-    # need to check this after openmp directive
-    if line[0] == "!":
-        assert _COMMENT_PATTERN.match(line) is not None
-        return Comment(line)
-
+def _is_comment_line(line):
     # https://docs.oracle.com/cd/E19957-01/805-4939/z40007332024/index.html
-    return Comment(line) if _COMMENT_PATTERN.match(line) else None
+    if _COMMENT_PATTERN.match(line) is not None:
+        return all(matcher.match(line) is None for matcher in _ALL_OMP_PATTERNS)
+    return False
+
+def _is_whitespace_line(line):
+    return line == '' or line.isspace()
+
+def _try_SrcItem_helper(line, provider, line_checker_fn, klass):
+
+    if line_checker_fn(line):
+        line_l = [line]
+        if provider is not None:
+            while True:
+                try:
+                    next_line = provider.peek()[1]
+                except StopIteration:
+                    break
+                if line_checker_fn(next_line):
+                    line_l.append(next(provider)[1])
+                else:
+                    break
+        return klass(line_l)
+    return None
+
+_try_comment = partial(
+    _try_SrcItem_helper, line_checker_fn=_is_comment_line, klass=Comment
+)
+_try_whitespace = partial(
+    _try_SrcItem_helper,
+    line_checker_fn=_is_whitespace_line,
+    klass=WhitespaceLines
+)
 
 _PREPROC_PATTERN = re.compile(r"^\s*\#")
 def _try_preprocessor(line):
@@ -265,17 +280,19 @@ def _inner_get_items(provider):
     assert provider.stripped_newline
     fname=None # we could definitely do better
 
-    def _try_nonomp(line):
-        for fn in [_try_whitespace, _try_comment, _try_preprocessor]:
-            if item := fn(line):
+    def _try_nonomp(line, provider):
+        for fn in [_try_whitespace, _try_comment]:
+            if item := fn(line, provider):
                 return item
+        if item := _try_preprocessor(line):
+            return item
         return None
 
     for lineno, line in provider:
         item = None
         if (item := _try_omp_directive(line, provider)):
             pass
-        elif (item := _try_nonomp(line)):
+        elif (item := _try_nonomp(line, provider)):
             pass
         elif _CONTINUE_PATTERN.match(line):
             raise RuntimeError(
@@ -299,9 +316,11 @@ def _inner_get_items(provider):
                 next_lineno, next_line = provider.peek((None, ""))
                 if _OMP_START_PATTERN.match(next_line):
                     break
-                elif (tmp := _try_nonomp(next_line)) is not None:
-                    cached_pairs.append((next_lineno, tmp))
-                    next(provider)
+                elif _try_nonomp(next_line, provider=None) is not None:
+                    cached_pairs.append((
+                        next_lineno,
+                        _try_nonomp(next(provider)[1], provider=provider)
+                    ))
                 elif _CONTINUE_PATTERN.match(next_line) is not None:
                     for _, item in cached_pairs:
                         line_l.append(item)
@@ -406,7 +425,7 @@ class ItSrcRegion:
             self._prologue = region
         elif self._started and not is_routine:
             for pair in cur_pairs:
-                if not isinstance(pair[1], (Comment, WhitespaceLine)):
+                if not isinstance(pair[1], (Comment, WhitespaceLines)):
                     raise RuntimeError(
                         "it's a little surprising that a regions outside of "
                         "the file's prologue and routine-regions holds "
