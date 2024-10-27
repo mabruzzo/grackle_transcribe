@@ -16,7 +16,16 @@ class Origin(NamedTuple):
     fname: Optional[str] = None
 
 class SrcItem:
-    pass
+    def __str__(self):
+        klass = self.__class__.__name__
+        tmp = [f'{self.__class__.__name__}(lines=[']
+        lines = self.lines
+        if len(lines) == 1:
+            return tmp[0] + f"'{lines[0]}'])"
+        for line in lines:
+            tmp.append(f"  '{line}',")
+        tmp.append('])')
+        return '\n'.join(tmp)
 
 class WhitespaceLines(SrcItem):
     # represents empty lines
@@ -150,26 +159,37 @@ class OMPDirective(SrcItem):
 
 class Code(SrcItem):
     # represents actual logic
-    def __init__(self, lines, origin = None):
-        assert not isinstance(lines, str)
-        assert len(lines) > 0
-        assert isinstance(lines[0], str)
-        self.lines = lines
+    def __init__(self, entries, origin = None):
+        assert not isinstance(entries, str)
+        assert len(entries) > 0
+        assert isinstance(entries[0], str)
+        self.entries = entries
 
         # the following check is not actually an error. But, it is a sign that
         # we will need to refactor, or (handle something manually)
-        if len(lines) > 1:
-            for line in lines:
-                assert not isinstance(line, (OMPDirective, PreprocessorDirective))
+        if len(entries) > 1:
+            for entry in entries:
+                assert not isinstance(entry, (OMPDirective, PreprocessorDirective))
         self.origin = origin
 
         kind, tokens, trailing_comment_start, has_label \
-            = process_code_chunk(self.lines)
+            = process_code_chunk(self.entries)
 
         self.kind = kind
         self.tokens = tokens
         self.trailing_comment_start = trailing_comment_start
         self.has_label = has_label
+
+    @property
+    def lines(self):
+        out = []
+        for entry in self.entries:
+            if isinstance(entry, SrcItem):
+                out+=entry.lines
+            else:
+                out.append(entry)
+        return out
+
 
     def nlines(self): return len(self.lines)
 
@@ -276,17 +296,17 @@ _PREPROC_PATTERN = re.compile(r"^\s*\#")
 def _try_preprocessor(line):
     return PreprocessorDirective(line) if _PREPROC_PATTERN.match(line) else None
 
+def _try_nonomp(line, provider):
+    for fn in [_try_whitespace, _try_comment]:
+        if item := fn(line, provider):
+            return item
+    if item := _try_preprocessor(line):
+        return item
+    return None
+
 def _inner_get_items(provider):
     assert provider.stripped_newline
     fname=None # we could definitely do better
-
-    def _try_nonomp(line, provider):
-        for fn in [_try_whitespace, _try_comment]:
-            if item := fn(line, provider):
-                return item
-        if item := _try_preprocessor(line):
-            return item
-        return None
 
     for lineno, line in provider:
         item = None
@@ -324,7 +344,7 @@ def _inner_get_items(provider):
                 elif _CONTINUE_PATTERN.match(next_line) is not None:
                     for _, item in cached_pairs:
                         line_l.append(item)
-                    cached_comment_pairs = []
+                    cached_pairs = []
                     line_l.append(next_line)
                     next(provider)
                 else:

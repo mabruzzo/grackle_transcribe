@@ -27,25 +27,8 @@ from dataclasses import dataclass
 from enum import auto, Enum
 
 from typing import Any, List, NamedTuple, Optional, Tuple, Union
-import weakref
 
-#__all__ = ["build_subroutine_entry"]
-
-
-
-# it would be nice to differentiate between:
-# -> arguments
-# -> local variables
-# -> named-constants
-# -> special-constants (macros and named-constants whose value changes)
-class Variable(NamedTuple):
-    name: str
-
-    #declaration_statement: 
-    # index of declaration_stmt.children that corresponds to self
-    child_index: int
-
-    is_constant: bool
+# defining datatypes
 
 class ArrSpec(NamedTuple):
     axlens: List[Any]
@@ -71,7 +54,9 @@ class Constant(NamedTuple):
 
 @dataclass(frozen=True)
 class Declaration:
-    # can either declare a single Constant or 1+ Variable(s)
+    """
+    Represents a declaration of a single Constant or 1+ Variable(s)
+    """
     identifier: Union[Constant, List[Variable]]
     src_item: Union[Code, List[SrcItem]]
     node: FortranASTNode
@@ -97,24 +82,32 @@ class Declaration:
 @dataclass(frozen=True)
 class Statement:
     item: Code
-    node: FortranASTNode
+    node: Optional[FortranASTNode]
 
 class ControlConstructKind(Enum):
     MetaIfElse = auto() # if preprocessor
     IfElse=auto()
     DoLoop=auto() # maybe differentiate between (a for vs while)
 
+class _ConditionContentPair(NamedTuple):
+    condition: Union[Statement,PreprocessorDirective]
+    content: List[Union[Statement, SrcItem]]
+
 @dataclass(frozen=True)
 class ControlConstruct:
     """Represents if-statement, do-statement, ifdef-statment"""
-    start_contents_pairs: List[Tuple[Union[Statement,PreprocessorDirective],List[Any]]]
+    condition_contents_pairs: _ConditionContentPair
     end: Union[Statement,PreprocessorDirective]
 
     def __post_init__(self):
-        assert len(self.start_contents_pairs) > 0
-        is_code = isinstance(end,Code)
-        for (start,_) in self.start_contents_pair:
-            assert isinstance(start, Code) == is_code
+        assert len(self.condition_contents_pairs) > 0
+        is_code = isinstance(self.end,Code)
+        for (condition,_) in self.condition_contents_pairs:
+            assert isinstance(condition, Code) == is_code
+
+    @property
+    def n_branches(self):
+        return len(self.condition_contents_pair)
 
 
 # it may make sense to use a class like the following instead of Code
@@ -141,6 +134,8 @@ class SubroutineEntity(NamedTuple):
     variables: List[Variable]
     constants: List[Constant]
 
+    subroutine_stmt: Statement
+
     # specifies any relevant include-directives
     prologue_directives: List[PreprocessorDirective]
 
@@ -149,6 +144,8 @@ class SubroutineEntity(NamedTuple):
 
     # specifies all entries related to the actual implementation
     impl_section: List[Union[ControlConstruct,SrcItem]]
+
+    endroutine_stmt: Statement
 
 class SubroutineAstNodes(NamedTuple):
     name: str
@@ -494,9 +491,174 @@ def process_declaration_section(prologue_directives, src_items,
             )
 
         if not _has_another_node():
-            return identifiers, entries, index
+            return identifiers, entries, src_index
     else:
         raise RuntimeError("something weird happended")
+
+
+_STARTKINDS = (
+    ChunkKind.IfConstructStart, ChunkKind.DoConstructStart, PreprocKind.IFDEF
+)
+
+class _LevelData:
+    # the idea is that this is a temporary object used to collect src_items as
+    # we move through (nested control constructs)
+    def __init__(self, first_item):
+        self.branch_content_pairs = [(first_item, [])]
+        if first_item.kind == ChunkKind.IfConstructStart:
+            pair = ([ChunkKind.ElseIf, ChunkKind.Else], ChunkKind.EndIf)
+        elif first_item.kind == ChunkKind.DoConstructStart:
+            pair = ([], ChunkKind.EndDo)
+        elif first_item.kind == PreprocKind.IFDEF:
+            pair = ([PreprocKind.ELSE], PreprocKind.ENDIF)
+        else:
+            raise ValueError(
+                f"first_item has invalid kind. It must be one of {_STARTKINDS}"
+            )
+        self.branch_kinds, self.level_end_kind = pair
+        self.end_item = None
+
+    def add_branch(self, item):
+        assert item.kind in self.branch_kinds
+        self.branch_content_pairs.append((item, []))
+
+    def append_entry(self, item):
+        self.branch_content_pairs[-1][1].append(item)
+
+    def most_recent_item(self):
+        # for debugging purposes
+        if self.end_item is not None:
+            return self.end_item
+        last_branch_content_pair = self.branch_content_pairs[-1]
+        if last_branch_content_pair[1] == []:
+            return last_branch_content_pair[0]
+        return last_branch_content_pair[1]
+
+
+def _process_impl_items(first_item, src_items):
+    # this deals with organizing items into (nested?) levels (if applicable)
+
+    levels = []
+    while True:
+        nlevels = len(levels)
+        if len(levels) == 0:
+            item = first_item
+        else:
+
+            try:
+                item = next(src_items)
+            except StopIteration:
+                raise RuntimeError(
+                    "Something went wrong! We ran out of source items while "
+                    f"we are {len(levels)} levels deep"
+                ) from None
+
+        if not isinstance(item, (PreprocessorDirective, Code)):
+            # definitionally, we must be creating a level object
+            levels[-1].append_entry(item)
+
+        elif item.kind in _STARTKINDS:
+            levels.append(_LevelData(item))
+
+        elif (nlevels > 0) and (item.kind in levels[-1].branch_kinds):
+            levels[-1].add_branch(item)
+
+        elif (nlevels > 0) and (item.kind == levels[-1].level_end_kind):
+            levels[-1].end_item = item
+            if nlevels == 1:
+                return levels[0] 
+            tmp = levels.pop()
+            levels[-1].append_entry(tmp)
+
+        elif (nlevels > 0):
+            levels[-1].append_entry(item)
+
+        else:
+            return item
+
+
+def _reconcile_item_nodes(item, defined_macros, node_itr):
+    # nominally handles reconciliation of items with ast nodes and returns the
+    # proper types
+
+    if isinstance(item, Code):
+        # match up with node (this should be easy!)
+        return Statement(
+            item = item, node = None, # node = next(node_itr)
+        )
+    elif isinstance(item, _LevelData):
+        # getting ast is a little tricky
+        # -> we need to do some unwrapping based on the kind of loop
+        # -> for a preprocessor ifdef, there may/may not be asts to examine
+        ccpair_list = []
+        level = item
+        for branch_item, content_l in level.branch_content_pairs:
+            if isinstance(branch_item, PreprocessorDirective):
+                condition_stmt = branch_item
+            else:
+                condition_stmt = Statement(
+                    item = branch_item, node = None, 
+                )
+            bundle_list = []
+            for entry in content_l:
+                if not isinstance(entry, (Code, _LevelData)):
+                    bundle_list.append(entry)
+                else:
+                    bundle_list.append(
+                        _reconcile_item_nodes(entry, defined_macros, node_itr)
+                    )        
+            ccpair_list.append(_ConditionContentPair(
+                condition_stmt, bundle_list
+            ))
+        if isinstance(level.end_item, PreprocessorDirective):
+            end_stmt = level.end_item
+        else:
+            end_stmt = Statement(item = level.end_item, node = None)
+        return ControlConstruct(ccpair_list, end_stmt)
+
+    else:
+        raise TypeError("Unexpected item type")
+
+
+def process_impl_section(identifiers, src_items,
+                         subroutine_nodes):
+    """
+    Returns
+    -------
+    entries: list
+        A list of ``SrcItem``, ``ControlConstruct``s, and ``Statement``s that
+        corresponds to each ``SrcItem`` in the implementation section of the 
+        subroutine
+    """
+
+    # to start out, we will simply ignore the ast_nodes
+
+    entries = []
+
+    src_iter = iter(src_items)
+    node_itr = peekable(subroutine_nodes.execution_node.children)
+
+    defined_macros = [
+        const.name for const in identifiers["constants"] if const.is_macro
+    ]
+
+    for item in src_iter:
+        if not isinstance(item, (PreprocessorDirective, Code)):
+            entries.append(item)
+            continue
+        elif item.kind == PreprocKind.DEFINE:
+            entries.append(item)
+            macro_name = item.kind_value
+            defined_macros.append(macro_name)
+            continue
+        else:
+            tmp_item = _process_impl_items(item, src_iter)
+            entries.append(_reconcile_item_nodes(
+                tmp_item, defined_macros, node_itr
+            ))
+
+    return entries
+
 
 def build_subroutine_entity(
         region: SrcRegion,
@@ -515,9 +677,11 @@ def build_subroutine_entity(
     src_items = [item for _,item in region.lineno_item_pairs]
     assert len(src_items) > 3
     assert src_items[0].kind == ChunkKind.SubroutineDecl
+    subroutine_stmt = Statement(item=src_items[0], node=None)
     assert src_items[-1].kind == ChunkKind.EndRoutine
-    src_items = src_items[1:-1]
+    endroutine_stmt = Statement(item=src_items[-1], node=None)
 
+    src_items = src_items[1:-1]
 
     subroutine_nodes = _build_ast(region, prologue_directives, config=config)
 
@@ -531,13 +695,18 @@ def build_subroutine_entity(
 
     # go through src_items[last_declaration_index+1:] and match up with
     # subroutine_nodes.execution_node
+    impl_section = process_impl_section(
+        identifiers, src_items[last_declaration_index+1:], subroutine_nodes
+    )
 
     return SubroutineEntity(
         name = subroutine_nodes.name,
         arguments = identifiers["arguments"],
         variables = identifiers["variables"],
         constants = identifiers["constants"],
+        subroutine_stmt = subroutine_stmt,
         prologue_directives = prologue_directives,
         declaration_section = declaration_entries,
-        impl_section = []
+        impl_section = impl_section,
+        endroutine_stmt = endroutine_stmt
     )
