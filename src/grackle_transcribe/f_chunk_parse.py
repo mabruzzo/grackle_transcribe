@@ -49,6 +49,11 @@ class _ClassifyReq:
                 checker = partial(_isinstance_check, klass=expected)
             else:
                 flags = re.IGNORECASE if attr == "string" else 0
+
+                if expected[0] != '^':
+                    expected = '^' + expected
+                if expected[-1] != '$':
+                    expected = expected +'$'
                 matcher = re.compile(expected, flags)
                 checker = partial(_attr_check, attr=attr, matcher=matcher)
 
@@ -143,6 +148,55 @@ class Type(Enum):
     mask_type = (5, ["mask_type"])
     gr_float = (6, ["r_prec"])
 
+class Operator(Enum):
+    """
+    Represents a binary or unary operation
+
+    This has been customized to store the regex for each kind and to track
+    whether it is a binary operation.
+    """
+
+    def __new__(cls, value, regex_list, is_binary_op):
+        obj = object.__new__(cls)
+        obj._value_ = value
+        obj.regex = re.compile(
+            "(" + "|".join([f"({elem})" for elem in regex_list]) + ")",
+            re.IGNORECASE
+        )
+        obj._is_binary_op = is_binary_op
+        return obj
+
+    def always_binary_op(self):
+        return isinstance(self._is_binary_op, bool) and self._is_binary_op
+
+    def always_unary_op(self):
+        return isinstance(self._is_binary_op, bool) and not self._is_binary_op
+
+    def dependendent_operand_count(self):
+        return self._is_binary_op is None
+
+    CONCAT = (1, [r"//"], True) # R712 concat-op
+    POW = (2, [r"\*\*"], True) # R708 power-op
+    MULTIPLY = (3, [r"\*"], True) # R709 mult-op
+    DIVIDE = (4, [r"/"], True) # R709 mult-op
+    # the following 2 cases can be a binary operation or control sign
+    PLUS = (5, [r"\+"], None) # R710 add-op
+    MINUS = (6, [r"\-"], None) # R710 add-op
+    # rel-op: R714
+    EQ = (7, [r"==", r"\.EQ\."], True)
+    NE = (8, [r"/=", r"\.NE\."], True)
+    LE = (9, [r"<=", r"\.LE\."], True)
+    LT = (10, [r"<", r"\.LT\."], True)
+    GE = (11, [r">=", r"\.GE\."], True)
+    GT = (12, [r">", r"\.GT\."], True)
+
+    NOT = (13, [r"\.NOT\."], False) # not-op R719
+    AND = (14, [r"\.AND\."], True) # and-op R720
+    OR = (15, [r"\.OR\."], True) # or-op R721
+    EQV = (16, [r"\.EQV\."], True) # equiv-op R722
+    NEQV = (17, [r"\.NEQV\."], True) # equiv-op R722
+    DEFINED = (18, [r"\.[a-z]+\."], None) # defined op
+
 _reqs = {
     ChunkKind.SubroutineDecl : _ClassifyReq(
         ["subroutine", ("type","arbitrary-name"), ("type", r"\(")]
@@ -234,16 +288,6 @@ _REAL_PATTERN = (
 )
 
 
-def _get_types():
-    tmp = [
-        "real", r"real\*4", r"real\*8",
-        "integer", r"integer\*4", r"integer\*8",
-        "logical", "mask_type", "r_prec"
-    ]
-
-    return (
-        "(" + "|".join([f"({elem})" for elem in tmp]) + ")"
-    )
 
 def _make_token_map():
     all_inputs = [
@@ -260,25 +304,11 @@ def _make_token_map():
         ('integer-literal', f'[-+]?\\d+(_{_KIND_PARAM_REGEX})?'),
         ('logical', r'\.((TRUE)|(FALSE))\.' + f'(_{_KIND_PARAM_REGEX})?'),
         # skip over non-base 10 integer-literals
+    ]
 
-        # operator tokens
-        # ===============
-        ("//", r"//"), # R712 concat-op
-        ("**", r"\*\*"), # R708 power-op
-        ("*", r"\*"), ("/", r"/"), # R709 mult-op
-        ("+", r"\+"), ("-", r"\-"), # R710 add-op
-        # rel-op: R714
-        ("eq", r"=="), ("eq", r"\.EQ\."),
-        ("ne", r"/="), ("ne", r"\.NE\."),
-        ("le", r"<="), ("le", r"\.LE\."),
-        ("lt", r"<"),  ("lt", r"\.LT\."),
-        ("ge", r">="), ("ge", r"\.GE\."),
-        ("gt", r">"),  ("gt", r"\.GT\."),
-        ("not", r"\.NOT\."), # not-op R719
-        ("and", r"\.AND\."), # and-op R720
-        ("or", r"\.OR\."), # or-op R721
-        ("eqv", r"\.EQV\."), ("neqv", r"\.NEQV\."), # equiv-op R722
-        ("defined-op", r"\.[a-z]+\."), # defined op
+    all_inputs += [(e,e.regex) for e in Operator]
+
+    all_inputs += [
 
         ("=", r"="),
         (";", r";"),
@@ -291,9 +321,6 @@ def _make_token_map():
         (":", ":"),
         ("::", r"::"),
         ("%", r"%"),
-
-        # type:
-        ("type", _get_types()),
     ]
 
     all_inputs += [(e, e.regex) for e in Type]
