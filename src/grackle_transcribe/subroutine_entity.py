@@ -355,11 +355,24 @@ def process_declaration_section(prologue_directives, src_items,
         elif item.kind == PreprocKind.INCLUDE_grackle_fortran_types:
             entries.append(item)
 
-            for name in ["RKIND", "DKIND", "DIKIND"]:
+            for name in ["MASK_KIND", "RKIND", "DKIND", "DIKIND"]:
                 tmp = _unpack_declaration(next(node_itr), is_const=True)
                 assert len(tmp) == 1
                 assert tmp[0][0].lower() == name.lower()
 
+
+            _register_identifier(Constant(
+                name="MASK_KIND", type=Type.i32, is_macro=False,
+                decl_section_index=index #value = 4
+            ))
+            _register_identifier(Constant(
+                name="MASK_TRUE", type=Type.mask_type, is_macro=True,
+                decl_section_index=index #value = 1
+            ))
+            _register_identifier(Constant(
+                name="MASK_FALSE", type=Type.mask_type, is_macro=True,
+                decl_section_index=index #value = 1
+            ))
             _register_identifier(Constant(
                 name="tiny", type=Type.gr_float, is_macro=True,
                 decl_section_index=index #value = 1e-20

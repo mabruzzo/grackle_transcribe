@@ -76,13 +76,16 @@ class _ClassifyReq:
                 return False
 
         if ((self.final_tok_pattern is not None) and
-            (self.final_tok_pattern.match(tok_l[i].string) is None)):
+            (self.final_tok_pattern.match(tok_l[-1].string) is None)):
+            #print("final token doesn't match!")
             return False
         elif ((self.max_len is not None) and
               (len(tok_l) > self.max_len)):
+            #print("max length doesn't match!")
             return False
         elif ((self.min_len is not None) and
               (len(tok_l) < self.min_len)):
+            #print("min length doesn't match!")
             return False
 
         return True
@@ -148,6 +151,10 @@ class Type(Enum):
     mask_type = (5, ["mask_type"])
     gr_float = (6, ["r_prec"])
 
+class _DummyMatcher:
+    def match(self, *args, **kwargs):
+        return None
+
 class Operator(Enum):
     """
     Represents a binary or unary operation
@@ -159,10 +166,13 @@ class Operator(Enum):
     def __new__(cls, value, regex_list, is_binary_op):
         obj = object.__new__(cls)
         obj._value_ = value
-        obj.regex = re.compile(
-            "(" + "|".join([f"({elem})" for elem in regex_list]) + ")",
-            re.IGNORECASE
-        )
+        if isinstance(regex_list, _DummyMatcher):
+            obj.regex = regex_list
+        else:
+            obj.regex = re.compile(
+                "(" + "|".join([f"({elem})" for elem in regex_list]) + ")",
+                re.IGNORECASE
+            )
         obj._is_binary_op = is_binary_op
         return obj
 
@@ -179,23 +189,28 @@ class Operator(Enum):
     POW = (2, [r"\*\*"], True) # R708 power-op
     MULTIPLY = (3, [r"\*"], True) # R709 mult-op
     DIVIDE = (4, [r"/"], True) # R709 mult-op
-    # the following 2 cases can be a binary operation or control sign
-    PLUS = (5, [r"\+"], None) # R710 add-op
-    MINUS = (6, [r"\-"], None) # R710 add-op
-    # rel-op: R714
-    EQ = (7, [r"==", r"\.EQ\."], True)
-    NE = (8, [r"/=", r"\.NE\."], True)
-    LE = (9, [r"<=", r"\.LE\."], True)
-    LT = (10, [r"<", r"\.LT\."], True)
-    GE = (11, [r">=", r"\.GE\."], True)
-    GT = (12, [r">", r"\.GT\."], True)
 
-    NOT = (13, [r"\.NOT\."], False) # not-op R719
-    AND = (14, [r"\.AND\."], True) # and-op R720
-    OR = (15, [r"\.OR\."], True) # or-op R721
-    EQV = (16, [r"\.EQV\."], True) # equiv-op R722
-    NEQV = (17, [r"\.NEQV\."], True) # equiv-op R722
-    DEFINED = (18, [r"\.[a-z]+\."], None) # defined op
+    # the following 4 operations are not directly parsed (we need to convert an
+    # existing token to these tokens depending on context)
+    ADD = (5, _DummyMatcher(), True) # R710 add-op
+    SUB = (6, _DummyMatcher(), True) # R710 add-op
+    PLUS_UNARY = (7, _DummyMatcher(), False) # not sure if Fortran supports this
+    MINUS_UNARY = (8, _DummyMatcher(), False) # F
+
+    # rel-op: R714
+    EQ = (9, [r"==", r"\.EQ\."], True)
+    NE = (10, [r"/=", r"\.NE\."], True)
+    LE = (11, [r"<=", r"\.LE\."], True)
+    LT = (12, [r"<", r"\.LT\."], True)
+    GE = (13, [r">=", r"\.GE\."], True)
+    GT = (14, [r">", r"\.GT\."], True)
+
+    NOT = (15, [r"\.NOT\."], False) # not-op R719
+    AND = (16, [r"\.AND\."], True) # and-op R720
+    OR = (17, [r"\.OR\."], True) # or-op R721
+    EQV = (18, [r"\.EQV\."], True) # equiv-op R722
+    NEQV = (19, [r"\.NEQV\."], True) # equiv-op R722
+    DEFINED = (20, [r"\.[a-z]+\."], None) # defined op
 
 _reqs = {
     ChunkKind.SubroutineDecl : _ClassifyReq(
@@ -296,21 +311,31 @@ def _make_token_map():
         # (if something comes along later with the same match, that later one gets preference)
         ("arbitrary-name", _NAME_REGEX),
 
+    ]
+
+    # need to put this before logical-literal
+    all_inputs += [(e,e.regex) for e in Operator]
+
+    # the following 2 tokens are meant to be used internally. We later replace
+    # these with certain operator instances based on context
+    all_inputs += [("INTERNAL+", r"\+"), ("INTERNAL-", r"\-")]
+
+    all_inputs += [
+
         # literal tokens
         # ==============
         ('string-literal', _string_literal()),
         ('real-literal', _REAL_PATTERN),
         # order matters here, we always pick the second match of equal length
         ('integer-literal', f'[-+]?\\d+(_{_KIND_PARAM_REGEX})?'),
-        ('logical', r'\.((TRUE)|(FALSE))\.' + f'(_{_KIND_PARAM_REGEX})?'),
+        ('logical-literal', r'\.((TRUE)|(FALSE))\.' + f'(_{_KIND_PARAM_REGEX})?'),
         # skip over non-base 10 integer-literals
     ]
 
-    all_inputs += [(e,e.regex) for e in Operator]
 
     all_inputs += [
 
-        ("=", r"="),
+        ("assign", r"="),
         (";", r";"),
 
         # assorted
@@ -359,6 +384,43 @@ def _make_token_map():
 
 
 _TOKEN_MAP = _make_token_map()
+_INTERNAL_TOKEN_TYPE_MAP = {
+    'INTERNAL+' : (Operator.PLUS_UNARY, Operator.ADD),
+    'INTERNAL-' : (Operator.MINUS_UNARY, Operator.SUB)
+}
+
+def _replace_internal_token_types(token_l, has_label = False):
+    # replace all internal token types based on context
+
+    for i, token in enumerate(token_l):
+        try:
+            unary_op, binary_op = _INTERNAL_TOKEN_TYPE_MAP[token]
+        except KeyError:
+            continue
+
+        first_token = i == 0 or ((i==1) and has_label)
+        if first_token:
+            # technically this qualifies as unary, but I don't think there is
+            # any reason anybody would actually write code like this. I think
+            # it is probably indicative of some kind of error
+            raise RuntimeError(
+                f"we don't expect to encounter code where '{token.string}' is "
+                "the first character in an expression"
+            )
+        prev_tok = token_l[i-1]
+
+        if prev_tok.string == ';':
+            raise RuntimeError("don't expect to see ';'")
+        elif prev_tok.type in (
+            'arbitrary-name', 'real-literal', 'integer-literal', ')'
+        ):
+            choice = binary_op
+        elif prev_tok.type in (')', '=', ','):
+            choice = unary_op
+        else:
+            raise ValueError("Encountered an unexpected scenario")
+
+        token_l[i] = token._replace(type = choice)
 
 # in fixed form, if the 6th column is occupied by anything other than a blank
 # or 0 (including a !), then it is a continuation line!
@@ -453,6 +515,10 @@ def scan_chunk(chunk_lines):
         (tokens[0].type == "integer-literal") and
         (len(tokens[0].string) <= 5)
     )
+
+
+    _replace_internal_token_types(tokens, has_label = has_label)
+    assert not any(t in _INTERNAL_TOKEN_TYPE_MAP for t in tokens)
 
     if expect_full_match_token and len(tokens) != (1+has_label):
         raise ValueError(

@@ -198,7 +198,8 @@ class Code(SrcItem):
 
 class LineProvider:
     # each entry is (lineno, content)
-    def __init__(self, f, lineno_start = 0, strip_newline=True):
+    def __init__(self, f, lineno_start = 0, strip_newline=True, fname = None):
+        self.fname = fname
         if strip_newline:
             inner = (line[:-1] for line in f)
         else:
@@ -306,7 +307,7 @@ def _try_nonomp(line, provider):
 
 def _inner_get_items(provider):
     assert provider.stripped_newline
-    fname=None # we could definitely do better
+    fname=provider.fname
 
     for lineno, line in provider:
         item = None
