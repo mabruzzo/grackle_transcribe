@@ -122,6 +122,8 @@ class ChunkKind(Enum):
     ElseIf = auto()
     Else = auto()
     EndIf = auto()
+
+    DoWhileConstructStart = auto()
     DoConstructStart = auto()
     EndDo = auto()
 
@@ -247,6 +249,7 @@ _reqs = {
     ChunkKind.IfSingleLine : _ClassifyReq(["if"]),
 
     # Do Statement Related
+    ChunkKind.DoWhileConstructStart: _ClassifyReq(["do", "while"], min_len = 3),
     ChunkKind.DoConstructStart : _ClassifyReq(["do"], min_len = 2),
     ChunkKind.EndDo : None, # it will be a full token match 
 

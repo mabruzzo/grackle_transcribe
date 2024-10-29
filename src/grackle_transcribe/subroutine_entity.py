@@ -294,6 +294,75 @@ def _get_typespec_attrs_from_item(item):
     return is_const, is_allocatable
 
 
+
+
+def _include_directive_constants(item, decl_section_index):
+    # this is for include directive whose only goal is to define constants
+    # (to my knowledge this is all include directivges)
+
+    if item.kind == PreprocKind.INCLUDE_grackle_fortran_types:
+        # (name, type, is_macro, value)
+        props = [
+            ("MASK_KIND",  Type.i32,       False, 4),
+            ("MASK_TRUE",  Type.mask_type, True,  1),
+            ("MASK_FALSE", Type.mask_type, True,  0),
+            ("tiny",       Type.gr_float,  True,  1e-20),
+            ("huge",       Type.gr_float,  True,  1e+20),
+            ("RKIND",      Type.i32,       False, None), #value = 4 or 8
+            ("tiny8",      Type.f64,       True,  1e-40),
+            ("huge8",      Type.f64,       True,  1e+40),
+            ("DKIND",      Type.i32,       False, 8),
+            ("DIKIND",     Type.i32,       False, 8),
+        ]
+    elif item.kind == PreprocKind.INCLUDE_phys_const:
+        # some of the values when compiled in single precision are slightly
+        # different (e.g. pi_val)
+        props =[
+            ('kboltz',    Type.gr_float, True, 1.3806504e-16),
+            ('mass_h',    Type.gr_float, True, 1.67262171e-24),   
+            ('mass_e',    Type.gr_float, True, 9.10938215e-28),
+            ('pi_val',    Type.gr_float, True, 3.141592653589793e0),
+            ('hplanck',   Type.gr_float, True, 6.6260693e-27),
+            ('ev2erg',    Type.gr_float, True, 1.60217653e-12),
+            ('c_light',   Type.gr_float, True, 2.99792458e10),
+            ('GravConst', Type.gr_float, True, 6.67428e-8),
+            ('sigma_sb',  Type.gr_float, True, 5.670373e-5),
+            ('SolarMass', Type.gr_float, True, 1.9891e33),
+            ('Mpc',       Type.gr_float, True, 3.0857e24),
+            ('kpc',       Type.gr_float, True, 3.0857e21),
+            ('pc',        Type.gr_float, True, 3.0857e18)
+        ]
+    elif (item.kind == PreprocKind.INCLUDE and
+          item.kind_value == "dust_const.def"):
+        props = [
+            ("sSiM",     Type.f64, True, 2.34118e0),
+            ("sFeM",     Type.f64, True, 7.95995e0),
+            ("sMg2SiO4", Type.f64, True, 3.22133e0),
+            ("sMgSiO3",  Type.f64, True, 3.20185e0),
+            ("sFe3O4",   Type.f64, True, 5.25096e0),
+            ("sAC",      Type.f64, True, 2.27949e0),
+            ("sSiO2D",   Type.f64, True, 2.66235e0),
+            ("sMgO",     Type.f64, True, 3.58157e0),
+            ("sFeS",     Type.f64, True, 4.87265e0),
+            ("sAl2O3",   Type.f64, True, 4.01610e0),
+            ("sreforg",  Type.f64, True, 1.5e0),
+            ("svolorg",  Type.f64, True, 1.0e0),
+            ("sH2Oice",  Type.f64, True, 0.92e0),
+        ]
+
+    else:
+        raise RuntimeError(
+            "CAN'T HANDLE A GENERIC PREPOCESSOR DIRECTIVE!\n"
+            f"  kind: {item.kind}\n"
+            f"  contents: {item.lines}"
+        )
+
+    for name, type_spec, is_macro, _ in props:
+        yield Constant(
+            name=name, type=type_spec, is_macro=is_macro,
+            decl_section_index=decl_section_index
+        )
+
 def process_declaration_section(prologue_directives, src_items,
                                 subroutine_nodes):
     """
@@ -337,11 +406,23 @@ def process_declaration_section(prologue_directives, src_items,
             else:
                 identifiers["arguments"][index] = identifier
 
+    # go through the prologue directives
+    for directive in prologue_directives:
+        if directive.kind == PreprocKind.DEFINE:
+            _register_identifier(Constant(
+                name=directive.kind_value, type=None, is_macro=True,
+                decl_section_index=None
+            ))
+        else:
+            for const in _include_directive_constants(directive, None):
+                _register_identifier(const)
+
     node_itr = peekable(subroutine_nodes.specification_node.children)
     def _has_another_node():
         return node_itr.peek(None) is not None
 
-    # we should go through the prologue directives and add any relevant constants
+
+
     entries = []
 
     src_iter = iter(enumerate(src_items))
@@ -351,72 +432,6 @@ def process_declaration_section(prologue_directives, src_items,
         if not isinstance(item, (PreprocessorDirective, Code)):
             entries.append(item)
             continue
-
-        elif item.kind == PreprocKind.INCLUDE_grackle_fortran_types:
-            entries.append(item)
-
-            for name in ["MASK_KIND", "RKIND", "DKIND", "DIKIND"]:
-                tmp = _unpack_declaration(next(node_itr), is_const=True)
-                assert len(tmp) == 1
-                assert tmp[0][0].lower() == name.lower()
-
-
-            _register_identifier(Constant(
-                name="MASK_KIND", type=Type.i32, is_macro=False,
-                decl_section_index=index #value = 4
-            ))
-            _register_identifier(Constant(
-                name="MASK_TRUE", type=Type.mask_type, is_macro=True,
-                decl_section_index=index #value = 1
-            ))
-            _register_identifier(Constant(
-                name="MASK_FALSE", type=Type.mask_type, is_macro=True,
-                decl_section_index=index #value = 1
-            ))
-            _register_identifier(Constant(
-                name="tiny", type=Type.gr_float, is_macro=True,
-                decl_section_index=index #value = 1e-20
-            ))
-            _register_identifier(Constant(
-                name="huge", type=Type.gr_float, is_macro=True,
-                decl_section_index=index #value = 1e20
-            ))
-            _register_identifier(Constant(
-                name="RKIND", type=Type.i32, is_macro=False,
-                decl_section_index=index #value = 4 or 8
-            ))
-            _register_identifier(Constant(
-                name="tiny8", type=Type.f64, is_macro=True,
-                decl_section_index=index #value = 1e-40
-            ))
-            _register_identifier(Constant(
-                name="huge8", type=Type.f64, is_macro=True,
-                decl_section_index=index #value = 1e40
-            ))
-            _register_identifier(Constant(
-                name="DKIND", type=Type.i32, is_macro=False,
-                decl_section_index=index #value = 8
-            ))
-            _register_identifier(Constant(
-                name="DIKIND", type=Type.i32, is_macro=False,
-                decl_section_index=index #value = 8
-            ))
-
-        elif ((item.kind == PreprocKind.INCLUDE) and
-              (item.kind_value == "dust_const.def")):
-            entries.append(item)
-            pairs = [
-                ("sSiM", 2.34118e0), ("sFeM", 7.95995e0),
-                ("sMg2SiO4",  3.22133e0), ("sMgSiO3", 3.20185e0),
-                ("sFe3O4", 5.25096e0), ("sAC", 2.27949e0),
-                ("sSiO2D", 2.66235e0), ("sMgO", 3.58157e0),
-                ("sFeS", 4.87265e0), ("sAl2O3", 4.01610e0),
-                ("sreforg", 1.5e0), ("svolorg", 1.0e0), ("sH2Oice", 0.92e0)]
-            for name,_ in pairs:
-                _register_identifier(Constant(
-                    name=name, type=Type.f64, is_macro=True,
-                    decl_section_index=index
-                ))
 
         elif ((item.kind == PreprocKind.IFDEF) and
               (item.kind_value == "GRACKLE_FLOAT_4")):
@@ -443,12 +458,22 @@ def process_declaration_section(prologue_directives, src_items,
             ))
 
         elif isinstance(item, PreprocessorDirective):
-            # generic preprocessor directive!
-            raise RuntimeError(
-                "CAN'T HANDLE A GENERIC PREPOCESSOR DIRECTIVE!\n"
-                f"  kind: {item.kind}\n"
-                f"  contents: {item.lines}"
-            )
+            # going to assume item is some kind of include directive!
+            # -> the following call will raise an error if it isn't
+            itr = _include_directive_constants(item, index)
+            entries.append(item)
+
+            _concrete_constants = []
+            for constant in itr:
+                if not constant.is_macro:
+                    _concrete_constants.append(constant.name)
+                _register_identifier(constant)
+
+            # consume all PARAMETER nodes that corrrespond to this statement
+            for name in _concrete_constants:
+                tmp = _unpack_declaration(next(node_itr), is_const=True)
+                assert len(tmp) == 1
+                assert tmp[0][0].lower() == name.lower()
 
         elif item.kind == ChunkKind.ImplicitNone:
             assert node_itr.peek().name == "ImplicitPart"
@@ -520,7 +545,9 @@ class _LevelData:
         self.branch_content_pairs = [(first_item, [])]
         if first_item.kind == ChunkKind.IfConstructStart:
             pair = ([ChunkKind.ElseIf, ChunkKind.Else], ChunkKind.EndIf)
-        elif first_item.kind == ChunkKind.DoConstructStart:
+        elif first_item.kind in [
+            ChunkKind.DoWhileConstructStart, ChunkKind.DoConstructStart
+        ]:
             pair = ([], ChunkKind.EndDo)
         elif first_item.kind == PreprocKind.IFDEF:
             pair = ([PreprocKind.ELSE], PreprocKind.ENDIF)
