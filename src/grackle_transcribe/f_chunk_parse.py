@@ -15,14 +15,18 @@ def _attr_check(token, attr, matcher):
         return False
     return matcher.match(attr_val) is not None
 
-def _isinstance_check(token, klass):
-    return isinstance(token.type, klass)
+def token_has_type(tok, type_spec):
+    if isinstance(type_spec, type):
+        return isinstance(tok.type, type_spec)
+    elif isinstance(type_spec, re.Pattern):
+        return type_spec.match(tok.type) is not None
+    return tok.type == type_spec
 
 class _ClassifyReq:
     # we only use regex for case insensitivity (we could get around this by
     # creating more types of tokens, but I think this is the simpler way to
     # do it)
-    leading_tok_l: list[Union[Callable]]
+    leading_tok_l: list[Callable]
     final_tok_str: Optional[re.Pattern] = None
     max_len: Optional[int]
     min_len: Optional[int]
@@ -46,7 +50,7 @@ class _ClassifyReq:
 
             if not isinstance(expected, str):
                 assert attr == 'type'
-                checker = partial(_isinstance_check, klass=expected)
+                checker = partial(token_has_type, type_spec=expected)
             else:
                 flags = re.IGNORECASE if attr == "string" else 0
 
@@ -55,7 +59,10 @@ class _ClassifyReq:
                 if expected[-1] != '$':
                     expected = expected +'$'
                 matcher = re.compile(expected, flags)
-                checker = partial(_attr_check, attr=attr, matcher=matcher)
+                if attr == 'type':
+                    checker = partial(token_has_type, type_spec=matcher)
+                else:
+                    checker = partial(_attr_check, attr=attr, matcher=matcher)
 
             self.leading_tok_l.append(checker)
 
@@ -178,10 +185,10 @@ class Operator(Enum):
         obj._is_binary_op = is_binary_op
         return obj
 
-    def always_binary_op(self):
+    def is_always_binary_op(self):
         return isinstance(self._is_binary_op, bool) and self._is_binary_op
 
-    def always_unary_op(self):
+    def is_always_unary_op(self):
         return isinstance(self._is_binary_op, bool) and not self._is_binary_op
 
     def dependendent_operand_count(self):
@@ -255,7 +262,8 @@ _reqs = {
 
 }
 
-    
+
+
 
 
 def _get_chunk_kind(token_list):
@@ -273,8 +281,6 @@ def _get_chunk_kind(token_list):
             return kind
     else:
         return ChunkKind.Uncategorized
-
-
 
 class Token(NamedTuple):
     type: Union[str, ChunkKind]
@@ -305,7 +311,12 @@ _REAL_PATTERN = (
     f'(_{_KIND_PARAM_REGEX})?'
 )
 
-
+class Literal(Enum):
+    string = auto()
+    real = auto()
+    integer = auto()
+    logical = auto()
+    # skip over non-base 10 integer-literals
 
 def _make_token_map():
     all_inputs = [
@@ -327,12 +338,11 @@ def _make_token_map():
 
         # literal tokens
         # ==============
-        ('string-literal', _string_literal()),
-        ('real-literal', _REAL_PATTERN),
+        (Literal.string, _string_literal()),
+        (Literal.real, _REAL_PATTERN),
         # order matters here, we always pick the second match of equal length
-        ('integer-literal', f'[-+]?\\d+(_{_KIND_PARAM_REGEX})?'),
-        ('logical-literal', r'\.((TRUE)|(FALSE))\.' + f'(_{_KIND_PARAM_REGEX})?'),
-        # skip over non-base 10 integer-literals
+        (Literal.integer, f'[-+]?\\d+(_{_KIND_PARAM_REGEX})?'),
+        (Literal.logical, r'\.((TRUE)|(FALSE))\.' + f'(_{_KIND_PARAM_REGEX})?'),
     ]
 
 
@@ -415,7 +425,7 @@ def _replace_internal_token_types(token_l, has_label = False):
         if prev_tok.string == ';':
             raise RuntimeError("don't expect to see ';'")
         elif prev_tok.type in (
-            'arbitrary-name', 'real-literal', 'integer-literal', ')'
+            'arbitrary-name', Literal.real, Literal.integer, ')'
         ):
             choice = binary_op
         elif prev_tok.type in (')', '=', ','):
@@ -515,7 +525,7 @@ def scan_chunk(chunk_lines):
 
     has_label = (
         (len(tokens) > 1) and
-        (tokens[0].type == "integer-literal") and
+        (tokens[0].type is Literal.integer) and
         (len(tokens[0].string) <= 5)
     )
 
@@ -541,3 +551,14 @@ def process_code_chunk(chunk_lines):
     kind = _get_chunk_kind(tokens[int(has_label):])
     return kind, tokens, trailing_comment_start, has_label
 
+
+def compressed_concat_tokens(token_itr):
+    # concatenate tokens into a string with as few characters as possible
+    token_itr = iter(token_itr)
+    tmp = [next(token_itr).string]
+    for tok in token_itr:
+        if ((tmp[-1][-1] not in _SPECIAL_CHARACTER) and
+            (tok.string[0] not in _SPECIAL_CHARACTER)):
+            tmp.append(' ')
+        tmp.append(tok.string)
+    return ''.join(tmp)

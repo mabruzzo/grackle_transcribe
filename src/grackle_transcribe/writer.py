@@ -21,7 +21,7 @@ from .src_model import (
 )
 
 
-from .f_chunk_parse import Type, ChunkKind, _NAME_REGEX
+from .f_chunk_parse import Type, ChunkKind, Literal, _NAME_REGEX
 
 # an entry is one of the following types:
 # -> we explicitly forbid it from being a Code instance (although other types
@@ -183,7 +183,7 @@ class ReplaceLogicalTranslator(EntryVisitor):
         item = entry.item
 
         logical_tokens = list(filter(
-            lambda tok: (tok.type == 'logical-literal' or
+            lambda tok: (tok.type == Literal.logical or
                          tok.string.lower() in self.logical_varnames),
             item.tokens
         ))

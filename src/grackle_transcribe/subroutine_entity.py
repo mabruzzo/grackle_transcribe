@@ -16,7 +16,8 @@ from .f_ast_load import (
 )
 
 from .f_chunk_parse import (
-    ChunkKind, Type
+    ChunkKind, Literal, Operator, Token, token_has_type, Type,
+    compressed_concat_tokens
 )
 
 from .subroutine_object import (
@@ -25,13 +26,13 @@ from .subroutine_object import (
 
 from dataclasses import dataclass
 from enum import auto, Enum
-
-from typing import Any, List, NamedTuple, Optional, Tuple, Union
+from itertools import islice
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple, Union
 
 # defining datatypes
 
 class ArrSpec(NamedTuple):
-    axlens: List[Any]
+    axlens: List[Optional[None]]
     allocatable: bool
 
     @property
@@ -42,7 +43,7 @@ class Variable(NamedTuple):
     name: str
     type: Type
     decl_section_index: int
-    ast_child_index: int
+    variable_number_on_line: int
     array_spec: Optional[ArrSpec]
 
 class Constant(NamedTuple):
@@ -51,6 +52,69 @@ class Constant(NamedTuple):
     is_macro: bool
     decl_section_index: int # the index of the object used for declarations
     # in the future, we might want to define a value when using a macro
+
+
+class IdentifierSpec:
+    _indentifiers: Dict[str, Tuple[Union[Variable,Constant],bool]]
+    _n_args: int
+    _first_const: int
+
+    def __init__(self, arguments, variables, constants):
+        self._identifiers = dict(
+            [(elem.name, (elem, True)) for elem in arguments] +
+            [(elem.name, (elem, False)) for elem in variables] +
+            [(elem.name, (elem, False)) for elem in constants]
+        )
+        self._n_args = len(arguments)
+        self._first_const = self._n_args + len(variables)
+        assert len(self._identifiers) == (self._first_const + len(constants))
+
+
+    def _is_kind(self, key, kind):
+        try:
+            val, is_arg = self._identifiers[key]
+        except KeyError:
+            return False
+        if kind == "arg":
+            return is_arg
+        elif kind == "var":
+            return (not is_arg) and isinstance(val, Variable)
+        elif kind == "constant":
+            return isinstance(val, Constant)
+        raise RuntimeError("Internal error")
+
+    def is_arg(self, key): return self._is_kind(key, 'arg')
+    def is_var(self, key): return self._is_kind(key, 'variable')
+    def is_constant(self, key): return self._is_kind(key, 'constatn')
+    def __len__(self): return len(self._identifiers)
+    def __getitem__(self, key): return self._identifiers[key][0]
+    def __contains__(self, key): return key in self._identifiers
+    def keys(self): return self._identifiers.keys()
+
+    @property
+    def arguments(self):
+        return [
+            v for v,_ in islice(self._identifiers.values(), self._n_args)
+        ]
+
+    @property
+    def variables(self):
+        return [
+            v for v,_ in islice(
+                self._identifiers.values(), self._n_args, self._first_const
+            )
+        ]
+
+    @property
+    def constants(self):
+        return [
+            v for v,_ in islice(
+                self._identifiers.values(), self._first_const, None
+            )
+        ]
+
+
+
 
 @dataclass(frozen=True)
 class Declaration:
@@ -130,9 +194,7 @@ class Declaration(NamedTuple):
 
 class SubroutineEntity(NamedTuple):
     name: str
-    arguments: List[Variable]
-    variables: List[Variable]
-    constants: List[Constant]
+    identifiers: IdentifierSpec
 
     subroutine_stmt: Statement
 
@@ -146,6 +208,346 @@ class SubroutineEntity(NamedTuple):
     impl_section: List[Union[ControlConstruct,SrcItem]]
 
     endroutine_stmt: Statement
+
+    @property
+    def arguments(self): return self.identifiers.arguments
+
+    @property
+    def variables(self): return self.identifiers.variables
+
+    @property
+    def constants(self): return self.identifiers.constants
+
+# Introduce the Concept of an expression/groups
+# -> fundamentally, they are a way of grouping together tokens
+
+class Expr:
+    def __str__(self):
+        return (
+            f"<{self.__class__.__name__}: '{compressed_str_from_Expr(self)}'>"
+        )
+
+
+def _iterate_expr_tokens(expr):
+
+    stack = [expr.iter_contents()]
+    while len(stack) > 0:
+        try:
+            elem = next(stack[-1])
+        except StopIteration:
+            stack.pop()
+        else:
+            if hasattr(elem, 'iter_contents'):
+                stack.append(elem.iter_contents())
+            else:
+                yield elem
+
+def compressed_str_from_Expr(expr):
+    print(list(_iterate_expr_tokens(expr)))
+    return compressed_concat_tokens(_iterate_expr_tokens(expr))
+
+@dataclass(frozen=True)
+class IdentifierExpr(Expr):
+    token: Token
+
+    def __post_init__(self): assert self.token.type == "arbitrary-name"
+    def iter_contents(self): yield self.token
+
+@dataclass(frozen=True)
+class LiteralExpr(Expr):
+    token: Token
+
+    def __post_init__(self): assert isinstance(self.token.type, Literal)
+    def iter_contents(self): yield self.token
+
+@dataclass(frozen=True)
+class ColonExpr(Expr):
+    token: Token
+
+    def __post_init__(self): assert self.token.string == ":"
+    def iter_contents(self): yield self.token
+
+@dataclass(frozen=True)
+class UnaryOpExpr(Expr):
+    op: Token
+    operand: Expr
+
+    def __post_init__(self): assert self.token.is_always_unary_op()
+
+    def iter_contents(self):
+        yield self.op
+        yield self.operand
+
+def _check_delim_sequence(seq, odd_index_check):
+    if (len(seq) % 2) != 1:
+        contents = '[\n' + '\n'.join(f'    {e},' for e in seq) + '\n]'
+        raise ValueError(
+            "seq must contain an odd number of entries. It "
+            f"currently holds: {contents}"
+        )
+    for i, entry in enumerate(seq):
+        is_even = ((i%2) == 0)
+        if is_even and not isinstance(entry, Expr):
+            raise TypeError(f"element {i} is not an expression")
+        elif (not is_even) and not odd_index_check:
+            raise ValueError(f"element {i} has an invalid value")
+
+@dataclass(frozen=True)
+class BinaryOpSeqExpr(Expr):
+    # the idea is that we don't want to deal with operator precedence
+    seq: Tuple[Union[Expr,Token], ...]
+    
+    def __post_init__(self):
+        _check_delim_sequence(self.seq, lambda e: e.is_always_binary_op())
+
+    def iter_contents(self): yield from self.seq
+
+@dataclass(frozen=True)
+class AssocExpr(Expr):
+    left: Token
+    expr: Expr
+    right: Token
+
+    def __post_init__(self):
+        assert self.left.string == '(' and self.right.string == ')'
+        assert isinstance(self.expr, Expr)
+
+    def iter_contents(self):
+        yield self.left
+        yield self.expr
+        yield self.right
+
+@dataclass(frozen=True)
+class ArgList:
+    # this is NOT an expression, but it contains expressions!
+    left: Token
+    seq: Tuple[Union[Expr,Token], ...]
+    right: Token
+
+    def __post_init__(self):
+        assert self.left.string == '(' and self.right.string == ')'
+        _check_delim_sequence(self.seq, lambda e: e.string == ',')
+
+    def iter_contents(self):
+        yield self.left
+        yield from self.seq
+        yield self.right
+
+    def get_args(self):
+        for i, entry in enumerate(self.seq):
+            if (i % 2) == 0:
+                yield entry
+
+@dataclass(frozen=True)
+class FnEval(Expr):
+    fn_name: Token
+    arg_l: ArgList
+
+    def __post_init__(self):
+        assert self.fn_name.type == 'arbitrary-name'
+        assert isinstance(self.arg_l, ArgList)
+
+    def iter_contents(self):
+        yield self.fn_name
+        yield self.arg_l
+
+@dataclass(frozen=True)
+class ArrayAccess(Expr):
+    array_name: IdentifierExpr
+    arg_l: ArgList
+
+    def iter_contents(self):
+        yield self.array_name
+        yield self.arg_l
+
+
+## then we can create special statements
+#class ScalarAssignmentStmt: pass
+#class ArrayAssignmentStmt: pass
+#class IfSingleLineStmt: pass
+#class IfConstructStartStmt: pass
+#class DoWhileStartStmt: pass
+#class DoStartStmt:pass
+
+BuiltinFn = None
+
+class Parser:
+
+    def __init__(self, identifier_ctx = None):
+        self.identifier_ctx = identifier_ctx
+
+    def _validate_identifier(self, require_array=False):
+        if self.identifier_ctx is None:
+            return True
+        else:
+            raise NotImplementedError("we didn't get to this quite yet")
+
+
+    def _match_ttype(self, type_spec, token_stream, *, consume=True,
+                     require_match= False):
+        try:
+            tok = token_stream.peek()
+        except StopIteration:
+            if require_match:
+                raise RuntimeError(
+                    f"we expected a match to a token of type {type_spec}, but "
+                    "there are no more tokens!"
+                ) from None
+            return None
+
+        if token_has_type(tok, type_spec):
+            if consume:
+                return next(token_stream)
+            return tok
+        elif require_match:
+            raise RuntimeError(
+                f"the token, {tok}, does not have the expected type {type_spec}"
+            )
+        return None
+
+    def _parse_arg_list(self, token_stream):
+        l = self._match_ttype('(', token_stream, require_match=True)
+        seq = [self._parse_expr(token_stream)]
+        while self._match_ttype(',', token_stream, consume=False) is not None:
+            seq.append(self._match_ttype(',', token_stream))
+            seq.append(self._parse_expr(token_stream))
+        r = self._match_ttype(')', token_stream, require_match=True)
+        return ArgList(left=l, seq=seq, right=r)
+
+    def _parse_assoc_expr(self, token_stream):
+        l = self._match_ttype('(', token_stream, require_match=True)
+        inner_expr = self._parse_expr(token_stream)
+        r = self._match_ttype(')', token_stream, require_match=True)
+        return AssocExpr(left = l, expr=inner_expr, right=r)
+
+    def _parse_single_expr(self, token_stream):
+
+        if tok := self._match_ttype(Literal, token_stream):
+            return LiteralExpr(tok)
+
+        elif tok := self._match_ttype(':', token_stream):
+            return ColonExpr(tok)
+
+        elif self._match_ttype('(', token_stream, consume=False) is not None:
+            return self._parse_assoc_expr(token_stream)
+
+        elif tok := self._match_ttype(Operator, token_stream):
+            assert tok.type.is_always_unary_op()
+            operand = self._parse_expr(token_stream)
+            return UnaryOpExpr(op=tok, operand=operand)
+
+        elif tok := self._match_ttype(BuiltinFn, token_stream):
+            return FnEval(
+                fn_name=tok, arg_l=self._parse_arg_list(token_stream)
+            )
+
+        elif tok := self._match_ttype("arbitrary-name", token_stream):
+            out = IdentifierExpr(tok)
+            followed_by_arglist = self._match_ttype(
+                '(', token_stream, consume=False
+            ) is not None
+            if followed_by_arglist:
+                out = ArrayAccess(out, arg_l=self._parse_arg_list(token_stream))
+            self._validate_identifier(require_array=followed_by_arglist)
+            return out
+
+        else:
+            # we haven't handled casts yet!
+            raise RuntimeError("NO IDEA HOW TO HANDLE THIS CASE")
+
+    def _parse_expr(self, token_stream):
+        expr_l = [self._parse_single_expr(token_stream)]
+        while tok := self._match_ttype(Operator, token_stream):
+            assert tok.type.is_always_binary_op()
+            expr_l.append(tok)
+            expr_l.append(self._parse_single_expr(token_stream))
+        if len(expr_l) == 1:
+            return expr_l[0]
+        return BinaryOpSeqExpr(expr_l)
+
+    def parse_variables_from_declaration(self, token_stream, *,
+                                         common_var_kwargs = {}):
+        # this currently won't support constants
+
+        type_tok = self._match_ttype(Type, token_stream, require_match=True)
+        if self._match_ttype(',', token_stream) is None:
+            allocatable = False
+            self._match_ttype('::', token_stream) # consume this if present
+        else:
+            attr = next(token_stream)
+            assert attr.string.lower() == 'allocatable'
+            allocatable = True
+            self._match_ttype('::', token_stream, require_match=True)
+
+        variables = []
+
+        for tok in token_stream:
+            if tok.type != "arbitrary-name":
+                raise RuntimeError(
+                    f"the {tok} token is not an arbitrary name"
+                )
+            followed_by_arglist = self._match_ttype(
+                '(', token_stream, consume=False
+            ) is not None
+            if allocatable and not followed_by_arglist:
+                raise RuntimeError(
+                    "we expect all allocatable variables to be arrays"
+                )
+            elif followed_by_arglist:
+                axlens = []
+                arg_l = self._parse_arg_list(token_stream)
+                for arg in arg_l.get_args():
+                    if isinstance(arg, ColonExpr):
+                        assert allocatable
+                        axlens.append(None)
+                    elif isinstance(
+                        arg,
+                        (IdentifierExpr,ArrayAccess,LiteralExpr,BinaryOpSeqExpr)
+                    ):
+                        axlens.append(arg)
+                    else:
+                        raise RuntimeError(
+                            "the argument list declaring the shape of "
+                            f"{tok.string}, the argument list, {arg_l!s}, has "
+                            f"an unexpected value {arg}"
+                        )
+                arr_spec = ArrSpec(axlens,allocatable)
+            else:
+                arr_spec = None
+            variables.append(Variable(
+                name=tok.string,
+                type=type_tok.type,
+                array_spec=arr_spec,
+                variable_number_on_line=len(variables),
+                **common_var_kwargs
+            ))
+
+            if bool(token_stream):
+                # consume the next comma
+                self._match_ttype(',', token_stream, require_match=True)
+                # confirm that there is at least one more token
+                assert bool(token_stream)
+        return variables
+
+    #def parse_if_statement(self, token_stream, construct_start):
+    #    tok = next(token_stream)
+    #    assert tok.string.lower() == 'if'
+    #    condition = self._parse_assoc_expr(token_stream)
+    #    if construct_start:
+    #        last_tok = next(token_stream)
+    #        assert tok.string.lower() == "then"
+    #        assert bool(token_stream) == False
+    #        return IfConstructStartStmt(...)
+    #    else:
+    #        raise NotImplementedError("...")
+    #        return IfSingleLineStmt(...)
+
+
+
+
+
+
+# machinery for coarser grained parsing!
 
 class SubroutineAstNodes(NamedTuple):
     name: str
@@ -400,7 +802,7 @@ def process_declaration_section(prologue_directives, src_items,
             identifiers["constants"].append(identifier)
         else:
             try:
-                index = known_arg_list.index(identifier.name)
+                index = known_arg_list.index(identifier.name.lower())
             except ValueError:
                 identifiers["variables"].append(identifier)
             else:
@@ -421,7 +823,7 @@ def process_declaration_section(prologue_directives, src_items,
     def _has_another_node():
         return node_itr.peek(None) is not None
 
-
+    parser = Parser()
 
     entries = []
 
@@ -502,19 +904,17 @@ def process_declaration_section(prologue_directives, src_items,
                         decl_section_index=index,
                     )
                 )
-                identifiers['constants'].append(identifier_list[-1])
             else:
-                tok_str_l = [tok.string.lower() for tok in item.tokens][1:]
-                for name, ast_child_idx in identifier_pairs:
-                    if name.lower() not in tok_str_l:
-                        raise RuntimeError(f"can't find the {name} token")
-                    assert name.lower() in tok_str_l
-                    identifier_list.append(Variable(
-                        name=name, type=item.tokens[0].type,
-                        decl_section_index=index,
-                        ast_child_index=ast_child_idx,
-                        array_spec = None # come back to last part in future
-                    ))
+                #print(compressed_concat_tokens(item.tokens))
+                identifier_list = parser.parse_variables_from_declaration(
+                    peekable(item.tokens),
+                    common_var_kwargs = {'decl_section_index' : index}
+                )
+                for i, (name, _) in enumerate(identifier_pairs):
+                    if name.lower() != identifier_list[i].name.lower():
+                        print(name)
+                        print(identifier_list[i])
+                        raise AssertionError()
             for elem in identifier_list:
                 _register_identifier(elem)
 
@@ -529,7 +929,16 @@ def process_declaration_section(prologue_directives, src_items,
             )
 
         if not _has_another_node():
-            return identifiers, entries, src_index
+            if None in identifiers["arguments"]:
+                index = identifiers["arguments"].index(None)
+
+                raise RuntimeError(
+                    "Something strange happened. We believe we are done with "
+                    "parsing parameters, but we never encountered a type "
+                    f"declaration for the {known_arg_list[index]} argument"
+                )
+
+            return IdentifierSpec(**identifiers), entries, src_index
     else:
         raise RuntimeError("something weird happended")
 
@@ -679,7 +1088,7 @@ def process_impl_section(identifiers, src_items,
     node_itr = peekable(subroutine_nodes.execution_node.children)
 
     defined_macros = [
-        const.name for const in identifiers["constants"] if const.is_macro
+        const.name for const in identifiers.constants if const.is_macro
     ]
 
     for item in src_iter:
@@ -726,7 +1135,7 @@ def build_subroutine_entity(
     subroutine_nodes = _build_ast(region, prologue_directives, config=config)
 
     # step up and match up declarations between source items and ast nodes
-    identifiers, declaration_entries, last_declaration_index = \
+    identifier_spec, declaration_entries, last_declaration_index = \
         process_declaration_section(
             prologue_directives=prologue_directives,
             src_items=src_items,
@@ -736,14 +1145,12 @@ def build_subroutine_entity(
     # go through src_items[last_declaration_index+1:] and match up with
     # subroutine_nodes.execution_node
     impl_section = process_impl_section(
-        identifiers, src_items[last_declaration_index+1:], subroutine_nodes
+        identifier_spec, src_items[last_declaration_index+1:], subroutine_nodes
     )
 
     return SubroutineEntity(
         name = subroutine_nodes.name,
-        arguments = identifiers["arguments"],
-        variables = identifiers["variables"],
-        constants = identifiers["constants"],
+        identifiers = identifier_spec,
         subroutine_stmt = subroutine_stmt,
         prologue_directives = prologue_directives,
         declaration_section = declaration_entries,
