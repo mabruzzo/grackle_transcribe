@@ -5,7 +5,7 @@ import shutil
 
 from .subroutine_entity import (
     Declaration,
-    Statement,
+    Stmt,
     ControlConstruct,
     build_subroutine_entity,
     Constant
@@ -32,7 +32,7 @@ from .f_chunk_parse import Type, ChunkKind, Literal, _NAME_REGEX
 # -> we explicitly forbid it from being a Code instance (although other types
 #    can contain Code instances)
 _ENTRY_TYPES = (
-    Declaration, Statement, ControlConstruct,
+    Declaration, Stmt, ControlConstruct,
     WhitespaceLines, Comment, PreprocessorDirective, OMPDirective
 )
 
@@ -58,6 +58,8 @@ class EntryVisitor:
         # the purpose of the visitor pattern
         assert isinstance(entry, _ENTRY_TYPES)
         name = entry.__class__.__name__
+        if isinstance(entry, Stmt):
+            name = 'Stmt'
         method = getattr(self, f'visit_{name}', self.unknown_visit)
         return method(entry)
 
@@ -66,6 +68,8 @@ class EntryVisitor:
         # the purpose of the visitor pattern
         assert isinstance(entry, _ENTRY_TYPES)
         name = entry.__class__.__name__
+        if isinstance(entry, Stmt):
+            name = 'Stmt'
         method = getattr(self, f'depart_{name}', self.unknown_depart)
         return method(entry)
 
@@ -116,7 +120,7 @@ class UnchangedTranslator(EntryVisitor):
         else:
             _passthrough_SrcItem(self.consumer, entry.src)
 
-    def visit_Statement(self, entry):
+    def visit_Stmt(self, entry):
         _passthrough_SrcItem(self.consumer,entry.item)
 
     def visit_ControlConstruct(self, entry):
@@ -184,7 +188,7 @@ class ReplaceLogicalTranslator(EntryVisitor):
         else:
             self._passthrough_SrcItem(entry.src)
 
-    def visit_Statement(self, entry):
+    def visit_Stmt(self, entry):
         item = entry.item
 
         logical_tokens = list(filter(
@@ -344,7 +348,12 @@ def c_like_fn_signature(subroutine):
 _TODO_PREFIX = '//_//'
 import textwrap
 
-class DeclarationTranslator(EntryVisitor):
+# ok, so when we do this for real, we will need to be a little more careful
+# with c++ variables.
+# -> We should probably create a class where we map the fortran name to a C++
+#    variable or a member of a C++ struct
+
+class CppTranslator(EntryVisitor):
 
     def __init__(self, consume_callback, identifier_spec):
         super().__init__(ignore_unknown=False)
@@ -354,9 +363,10 @@ class DeclarationTranslator(EntryVisitor):
             consume_callback(f"  {_TODO_PREFIX} PORT: {arg}")
         self.unaddressed_consumer = _Consumer(unaddressed_consume)
         self.identifier_spec = identifier_spec
+        self.block_level=1
 
     def _write_translated_line(self, line):
-        indent = '  '
+        indent = '  ' * self.block_level
         self.consumer.consume(f'{indent}{line}')
 
     def _passthrough_SrcItem(self, entry, unaddressed = True):
@@ -364,6 +374,50 @@ class DeclarationTranslator(EntryVisitor):
             _passthrough_SrcItem(self.unaddressed_consumer, entry)
         else:
             _passthrough_SrcItem(self.consumer, entry)
+
+    def _cpp_variable_name(self, fortran_identifier, as_ptr = False):
+        """
+        This produces the string C++ variable name that corresponds to the
+        Fortran variable name
+
+        Parameters
+        ----------
+        fortran_identifier: str or IdentifierExpr
+            name of the fortran variable
+        as_ptr: bool
+            When False, the string accesses the value of the variable. When
+            True, the string specifies the address of the value
+        """
+
+        # I think we will want to get a lot more sophisticated, (and maybe
+        # break this functionality out into a separate class/function) but to
+        # start out we do something extremely simple
+        # -> we might want to eventually return an intermediate class that
+        #    the translator then uses to get a pointer address or access value
+        #    based on context
+
+        # we assume that the variable name is unchanged
+        if isinstance(fortran_identifier, IdentifierExpr):
+            var_name = fortran_identifier.token.string
+        else:
+            var_name = fortran_identifier
+
+        if self.identifier_spec.is_arg(var_name):
+            return var_name if as_ptr else f'(*{var_name})'
+        elif ((self.identifier_spec.is_var(var_name)) or
+              (not self.identifier_spec[var_name].is_macro)):
+            return f'(&{var_name})' if as_ptr else var_name
+        else: # it is a macro constant
+            # NOTE: I vaguely recall that we may need to remap macro names
+            # between Fortran and C++, but that's a problem for the future
+            assert self.identifier_spec[var_name].is_macro
+            if as_ptr:
+                raise ValueError(
+                    "It doesn't make any sense to return a pointer to a macro "
+                    "that expands to a constant"
+                )
+            return var_name
+
 
     def visit_WhitespaceLines(self, entry):
         self._passthrough_SrcItem(entry, unaddressed = False)
@@ -440,10 +494,7 @@ class DeclarationTranslator(EntryVisitor):
                 if isinstance(elem, LiteralExpr):
                     factors.append(elem.token.string)
                 elif isinstance(elem, IdentifierExpr):
-                    if self.identifier_spec.is_arg(elem.token.string):
-                        factors.append(f'(*{elem.token.string})')
-                    else:
-                        factors.append(elem.token.string)
+                    factors.append(self._cpp_variable_name(elem, as_ptr=False))
                 else:
                     raise RuntimeError("not equipped to handle this case yet")
             self._write_translated_line(
@@ -454,7 +505,7 @@ class DeclarationTranslator(EntryVisitor):
 
         return None
 
-    def visit_Statement(self, entry):
+    def visit_Stmt(self, entry):
         self._passthrough_SrcItem(entry.item)
 
     def visit_ControlConstruct(self, entry):
@@ -486,7 +537,7 @@ def transcribe(in_fname, out_f):
             subroutine = build_subroutine_entity(region, it.prologue)
 
 
-            translator = DeclarationTranslator(
+            translator = CppTranslator(
                 writer, identifier_spec = subroutine.identifiers
             )
 
@@ -500,6 +551,10 @@ def transcribe(in_fname, out_f):
             writer("")
             writer("  //_// TODO: TRANSLATE IMPLEMENTATION")
             writer("")
+
+            for entry in subroutine.impl_section:
+                translator.dispatch_visit(entry)
+
 
             writer("  // handle deallocation!")
             for elem in translator.needs_dealloc:

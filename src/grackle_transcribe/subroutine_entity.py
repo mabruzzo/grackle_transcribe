@@ -84,8 +84,8 @@ class IdentifierSpec:
         raise RuntimeError("Internal error")
 
     def is_arg(self, key): return self._is_kind(key, 'arg')
-    def is_var(self, key): return self._is_kind(key, 'variable')
-    def is_constant(self, key): return self._is_kind(key, 'constatn')
+    def is_var(self, key): return self._is_kind(key, 'var')
+    def is_constant(self, key): return self._is_kind(key, 'constant')
     def __len__(self): return len(self._identifiers)
     def __getitem__(self, key): return self._identifiers[key][0]
     def __contains__(self, key): return key in self._identifiers
@@ -143,10 +143,12 @@ class Declaration:
     def is_conditional_declaration(self):
         return isinstance(self.src_item,list)
 
-@dataclass(frozen=True)
-class Statement:
-    item: Code
-    node: Optional[FortranASTNode]
+class Stmt:
+    # baseclass
+
+    @property
+    def item(self):
+        return self.src # for backwards compatability
 
 class ControlConstructKind(Enum):
     MetaIfElse = auto() # if preprocessor
@@ -154,14 +156,14 @@ class ControlConstructKind(Enum):
     DoLoop=auto() # maybe differentiate between (a for vs while)
 
 class _ConditionContentPair(NamedTuple):
-    condition: Union[Statement,PreprocessorDirective]
-    content: List[Union[Statement, SrcItem]]
+    condition: Union[Stmt,PreprocessorDirective]
+    content: List[Union[Stmt, SrcItem]]
 
 @dataclass(frozen=True)
 class ControlConstruct:
     """Represents if-statement, do-statement, ifdef-statment"""
     condition_contents_pairs: _ConditionContentPair
-    end: Union[Statement,PreprocessorDirective]
+    end: Union[Stmt,PreprocessorDirective]
 
     def __post_init__(self):
         assert len(self.condition_contents_pairs) > 0
@@ -172,16 +174,6 @@ class ControlConstruct:
     @property
     def n_branches(self):
         return len(self.condition_contents_pair)
-
-
-# it may make sense to use a class like the following instead of Code
-# class Statement(NamedTuple):
-#     src: Code
-#     ast: Optional[FortranASTNode]
-#
-#     @property
-#     def lines(self): return self.code.lines
-#
 
 class Declaration(NamedTuple):
     src: Union[Code, List[SrcItem]]
@@ -196,7 +188,7 @@ class SubroutineEntity(NamedTuple):
     name: str
     identifiers: IdentifierSpec
 
-    subroutine_stmt: Statement
+    subroutine_stmt: Stmt
 
     # specifies any relevant include-directives
     prologue_directives: List[PreprocessorDirective]
@@ -207,7 +199,7 @@ class SubroutineEntity(NamedTuple):
     # specifies all entries related to the actual implementation
     impl_section: List[Union[ControlConstruct,SrcItem]]
 
-    endroutine_stmt: Statement
+    endroutine_stmt: Stmt
 
     @property
     def arguments(self): return self.identifiers.arguments
@@ -362,6 +354,11 @@ class ArrayAccess(Expr):
 
 
 ## then we can create special statements
+@dataclass(frozen=True)
+class UncategorizedStmt(Stmt):
+    src: Code
+    ast: Optional[FortranASTNode]
+
 #class ScalarAssignmentStmt: pass
 #class ArrayAssignmentStmt: pass
 #class IfSingleLineStmt: pass
@@ -879,7 +876,7 @@ def process_declaration_section(prologue_directives, src_items,
 
         elif item.kind == ChunkKind.ImplicitNone:
             assert node_itr.peek().name == "ImplicitPart"
-            entries.append(Statement(item=item, node=next(node_itr)))
+            entries.append(UncategorizedStmt(src=item, ast=next(node_itr)))
 
         elif item.kind == ChunkKind.TypeSpec:
             is_const, is_allocatable = _get_typespec_attrs_from_item(item)
@@ -1032,8 +1029,8 @@ def _reconcile_item_nodes(item, defined_macros, node_itr):
 
     if isinstance(item, Code):
         # match up with node (this should be easy!)
-        return Statement(
-            item = item, node = None, # node = next(node_itr)
+        return UncategorizedStmt(
+            src = item, ast=None, # node = next(node_itr)
         )
     elif isinstance(item, _LevelData):
         # getting ast is a little tricky
@@ -1045,9 +1042,7 @@ def _reconcile_item_nodes(item, defined_macros, node_itr):
             if isinstance(branch_item, PreprocessorDirective):
                 condition_stmt = branch_item
             else:
-                condition_stmt = Statement(
-                    item = branch_item, node = None, 
-                )
+                condition_stmt = UncategorizedStmt(src=branch_item, ast=None)
             bundle_list = []
             for entry in content_l:
                 if not isinstance(entry, (Code, _LevelData)):
@@ -1062,7 +1057,7 @@ def _reconcile_item_nodes(item, defined_macros, node_itr):
         if isinstance(level.end_item, PreprocessorDirective):
             end_stmt = level.end_item
         else:
-            end_stmt = Statement(item = level.end_item, node = None)
+            end_stmt = UncategorizedStmt(src=level.end_item, ast=None)
         return ControlConstruct(ccpair_list, end_stmt)
 
     else:
@@ -1075,7 +1070,7 @@ def process_impl_section(identifiers, src_items,
     Returns
     -------
     entries: list
-        A list of ``SrcItem``, ``ControlConstruct``s, and ``Statement``s that
+        A list of ``SrcItem``, ``ControlConstruct``s, and ``Stmt``s that
         corresponds to each ``SrcItem`` in the implementation section of the 
         subroutine
     """
@@ -1126,9 +1121,9 @@ def build_subroutine_entity(
     src_items = [item for _,item in region.lineno_item_pairs]
     assert len(src_items) > 3
     assert src_items[0].kind == ChunkKind.SubroutineDecl
-    subroutine_stmt = Statement(item=src_items[0], node=None)
+    subroutine_stmt = UncategorizedStmt(src=src_items[0], ast=None)
     assert src_items[-1].kind == ChunkKind.EndRoutine
-    endroutine_stmt = Statement(item=src_items[-1], node=None)
+    endroutine_stmt = UncategorizedStmt(src=src_items[-1], ast=None)
 
     src_items = src_items[1:-1]
 
