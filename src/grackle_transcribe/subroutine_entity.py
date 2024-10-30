@@ -16,6 +16,8 @@ from .f_ast_load import (
 )
 
 from .f_chunk_parse import (
+    BuiltinFn,
+    BuiltinProcedure,
     ChunkKind, Literal, Operator, Token, token_has_type, Type,
     compressed_concat_tokens
 )
@@ -113,7 +115,32 @@ class IdentifierSpec:
             )
         ]
 
+    def validate_identifier(self, identifier_name, require_array_dim=None):
+        try:
+            tmp = self[identifier_name]
+        except KeyError:
+            raise RuntimeError(
+                f"{identifier_name} is not a known identifier. "
+                "is it actually the name of a builtin function?"
+            ) from None
 
+        if require_array_dim is None:
+            return True
+        elif require_array_dim < 1:
+            raise ValueError(
+                "when specified, require_array_dim must be positive"
+            )
+        elif isinstance(tmp, Constant) or tmp.array_spec is None:
+            raise RuntimeError(
+                f"the fortran identifier {identifier_name} is not an array"
+            )
+        elif tmp.array_spec.rank != require_array_dim:
+            raise RuntimeError(
+                f"the fortran identifier {identifier_name} has "
+                f"{tmp.array_spec.rank} dimensions (instead of "
+                f"{require_array_dim} dimensions)."
+            )
+        return True
 
 
 @dataclass(frozen=True)
@@ -336,7 +363,7 @@ class FnEval(Expr):
     arg_l: ArgList
 
     def __post_init__(self):
-        assert self.fn_name.type == 'arbitrary-name'
+        assert isinstance(self.fn_name.type, BuiltinFn)
         assert isinstance(self.arg_l, ArgList)
 
     def iter_contents(self):
@@ -354,30 +381,98 @@ class ArrayAccess(Expr):
 
 
 ## then we can create special statements
+#
+# with the benefit of hindsight, I think the whole principle of ChunkKind was
+# a mistake... I think we should have just parsed Stmts. We are kinda stuck
+# with it for now...
 @dataclass(frozen=True)
 class UncategorizedStmt(Stmt):
     src: Code
-    ast: Optional[FortranASTNode]
+    ast: Optional[FortranASTNode] = None
 
-#class ScalarAssignmentStmt: pass
-#class ArrayAssignmentStmt: pass
-#class IfSingleLineStmt: pass
-#class IfConstructStartStmt: pass
+    def iter_contents(self): yield from self.src.tokens
+
+@dataclass(frozen=True)
+class ScalarAssignStmt(Stmt):
+    # this is a standard assignment (C has the builtin equivalent)
+    src: Code
+    lvalue: Expr
+    assign_tok: Token # the '=' token
+    rvalue: Expr
+
+    def iter_contents(self): 
+        yield self.lvalue
+        yield self.assign_tok
+        yield self.rvalue
+
+@dataclass(frozen=True)
+class ArrayAssignStmt(Stmt):
+    # this is the case where we are performing assignments on many array
+    # elements at once
+    src: Code
+    lvalue: Expr
+    assign_tok: Token # the '=' token
+    rvalue: Expr
+
+    def iter_contents(self): 
+        yield self.lvalue
+        yield self.assign_tok
+        yield self.rvalue
+
+@dataclass(frozen=True)
+class CallStmt(Stmt):
+    src: Code
+    call_tok: Token
+    subroutine: Token
+    arg_l: ArgList
+
+    def iter_contents(self):
+        yield self.call_tok
+        yield self.subroutine
+        yield self.arg_l
+
+@dataclass(frozen=True)
+class IfSingleLineStmt(Stmt):
+    src: Code
+    if_tok: Token
+    condition: AssocExpr
+    consequent: Stmt
+
+    def iter_contents(self):
+        yield self.if_tok
+        yield self.condition
+        yield self.consequent
+
+@dataclass(frozen=True)
+class IfConstructStartStmt(Stmt):
+    src: Code
+    if_tok: Token
+    condition: AssocExpr
+    then_tok: Token
+
+    def iter_contents(self):
+        yield self.if_tok
+        yield self.condition
+        yield self.then_tok
+
 #class DoWhileStartStmt: pass
 #class DoStartStmt:pass
 
-BuiltinFn = None
+def is_itr_exhausted(itr):
+    return bool(itr) == False
 
 class Parser:
 
     def __init__(self, identifier_ctx = None):
         self.identifier_ctx = identifier_ctx
 
-    def _validate_identifier(self, require_array=False):
+    def _validate_identifier(self, identifier_name, require_array_dim=None):
         if self.identifier_ctx is None:
             return True
-        else:
-            raise NotImplementedError("we didn't get to this quite yet")
+        return self.identifier_ctx.validate_identifier(
+            identifier_name=identifier_name,
+            require_array_dim=require_array_dim
+        )
 
 
     def _match_ttype(self, type_spec, token_stream, *, consume=True,
@@ -417,6 +512,12 @@ class Parser:
         r = self._match_ttype(')', token_stream, require_match=True)
         return AssocExpr(left = l, expr=inner_expr, right=r)
 
+    def _parse_unchecked_identifier_expr(self,token_stream):
+        tok = self._match_ttype(
+            "arbitrary-name", token_stream, require_match=True
+        )
+        return IdentifierExpr(tok)
+
     def _parse_single_expr(self, token_stream):
 
         if tok := self._match_ttype(Literal, token_stream):
@@ -438,29 +539,38 @@ class Parser:
                 fn_name=tok, arg_l=self._parse_arg_list(token_stream)
             )
 
-        elif tok := self._match_ttype("arbitrary-name", token_stream):
-            out = IdentifierExpr(tok)
+        elif self._match_ttype(
+            "arbitrary-name", token_stream, consume=False
+        ) is not None:
+            out = self._parse_unchecked_identifier_expr(token_stream)
             followed_by_arglist = self._match_ttype(
                 '(', token_stream, consume=False
             ) is not None
+            identifier_name = out.token.string
             if followed_by_arglist:
                 out = ArrayAccess(out, arg_l=self._parse_arg_list(token_stream))
-            self._validate_identifier(require_array=followed_by_arglist)
+                nargs = len(list(out.arg_l.get_args()))
+            else:
+                nargs = None
+            self._validate_identifier(identifier_name, require_array_dim=nargs)
             return out
 
         else:
             # we haven't handled casts yet!
             raise RuntimeError("NO IDEA HOW TO HANDLE THIS CASE")
 
-    def _parse_expr(self, token_stream):
+    def _parse_expr(self, token_stream, *, expected_type = None):
         expr_l = [self._parse_single_expr(token_stream)]
         while tok := self._match_ttype(Operator, token_stream):
             assert tok.type.is_always_binary_op()
             expr_l.append(tok)
             expr_l.append(self._parse_single_expr(token_stream))
-        if len(expr_l) == 1:
-            return expr_l[0]
-        return BinaryOpSeqExpr(expr_l)
+
+        out = expr_l[0] if (len(expr_l) == 1) else BinaryOpSeqExpr(expr_l)
+        if expected_type is not None:
+            assert isinstance(out, expected_type)
+        return out
+
 
     def parse_variables_from_declaration(self, token_stream, *,
                                          common_var_kwargs = {}):
@@ -526,19 +636,126 @@ class Parser:
                 assert bool(token_stream)
         return variables
 
-    #def parse_if_statement(self, token_stream, construct_start):
-    #    tok = next(token_stream)
-    #    assert tok.string.lower() == 'if'
-    #    condition = self._parse_assoc_expr(token_stream)
-    #    if construct_start:
-    #        last_tok = next(token_stream)
-    #        assert tok.string.lower() == "then"
-    #        assert bool(token_stream) == False
-    #        return IfConstructStartStmt(...)
-    #    else:
-    #        raise NotImplementedError("...")
-    #        return IfSingleLineStmt(...)
+    def parse_stmt(self, token_stream, src, *,
+                   sub_statement=False):
+        # maybe src should be accessible through token_stream?
 
+        #if not sub_statement:
+        #    print(compressed_concat_tokens(src.tokens))
+
+        next_tok = token_stream.peek()
+        out = None
+
+        if next_tok.string.lower() == 'if':
+            out = self.parse_if_stmt(token_stream, src)
+        elif next_tok.string.lower() == 'do':
+            self.parse_do_stmt(token_stream, src)
+        elif next_tok.string.lower() == 'call':
+            out = CallStmt(
+                src=src,
+                call_tok=next(token_stream),
+                subroutine=self._match_ttype(
+                    "arbitrary-name", token_stream, require_match=True
+                ),
+                arg_l = self._parse_arg_list(token_stream)
+            )
+        elif next_tok.string.lower() == 'write':
+            out = UncategorizedStmt(src=src)
+        #elif ...
+        #    ....
+        else:
+
+            # at this point, we should have exhausted all obvious statements.
+            # So, now we try to parse assignment statement
+            # -> in the future, we will eliminate this try-except and handle
+            #    this far more gracefully
+            if out is None:
+                try:
+                    out = self.try_parse_assignment_stmt(token_stream, src)
+                except RuntimeError:
+                    out = None
+
+        if out is None: # in the future, this branch will become an error
+            out = UncategorizedStmt(src=src)
+        elif ((not is_itr_exhausted(token_stream)) and
+              (not isinstance(out, UncategorizedStmt))):
+            next_token = token_stream.peek()
+            raise RuntimeError(
+                "something went wrong! we haven't exhausted token_stream\n"
+                "-> all tokens:\n"
+                f"    `{compressed_concat_tokens(src.tokens)}`\n"
+                "-> parsed tokens:\n"
+                f"     `{compressed_str_from_Expr(out)}`\n"
+                "-> next token:\n"
+                f"      {next_token}\n"
+                "-> cur Expr:\n"
+                f"      {out}"
+            )
+        return out
+
+    def try_parse_assignment_stmt(self, token_stream, src):
+        # try to get the L-value and investigate its properties
+        lval = self._parse_expr(token_stream)
+        if isinstance(lval, ArrayAccess):
+            # we may want to check for colons as array indices, that may
+            # indicate an array access
+            if any(isinstance(e, ColonExpr) for e in lval.arg_l.get_args()):
+                is_array_op = True # modifying a whole slice
+            else:
+                is_array_op = False # modifing 1 scalar stored in the array
+        elif isinstance(lval, IdentifierExpr):
+            identifier = self.identifier_ctx[lval.token.string]
+            if isinstance(identifier, Constant):
+                return None
+            elif identifier.array_spec is None:
+                is_array_op = False # modifying a scalar variable
+            else:
+                is_array_op = True # modifying all contents of array?
+        else:
+            return None
+
+        assign_tok = self._match_ttype("=", token_stream)
+        if assign_tok is None:
+            return None
+        rval = self._parse_expr(token_stream)
+        
+        klass = ArrayAssignStmt if is_array_op else ScalarAssignStmt
+        return klass(
+            src=src, lvalue=lval, assign_tok=assign_tok, rvalue=rval
+        )
+
+
+    def parse_if_stmt(self, token_stream, src):
+        if_tok = next(token_stream)
+        assert if_tok.string.lower() == 'if'
+        condition = self._parse_assoc_expr(token_stream)
+        post_condition_tok = next(token_stream)
+
+        if post_condition_tok.string.lower() == 'then':
+            if not is_itr_exhausted(token_stream):
+                raise RuntimeError(
+                    "another token seems to exist after `if (<cond>) then`"
+                )
+            return IfConstructStartStmt(
+                src=src,
+                if_tok=if_tok,
+                condition=condition,
+                then_tok=post_condition_tok
+            )
+        consequent = self.parse_stmt(token_stream, src, sub_statement=True)
+        if isinstance(consequent, UncategorizedStmt):
+            return UncategorizedStmt(src=src)
+        else:
+            return IfConstructStartStmt(
+                src=src,
+                if_tok=if_tok,
+                condition=condition,
+                consequent=consequent
+            )
+             
+
+    def parse_do_stmt(self, token_stream, src):
+        return UncategorizedStmt(src=src)
 
 
 
@@ -1023,14 +1240,22 @@ def _process_impl_items(first_item, src_items):
             return item
 
 
-def _reconcile_item_nodes(item, defined_macros, node_itr):
-    # nominally handles reconciliation of items with ast nodes and returns the
-    # proper types
+def _reconcile_item_nodes(parser, item, defined_macros, node_itr):
+    # this was originally written with the nominal intention of:
+    # - converting _LevelData and items into a ControlConstruct and Stmt, where
+    #   each statement holds reconciled AST nodes
+    # - we never quite implemented logic for reconcilliation
+    #
+    # At this point, it still doesn't interact at all with AST nodes and we are
+    # manually parsing statments.
+    # - it would probably be better to handle parsing when we are creating the
+    #   _LevelData instances (so we could move towards excising ChunkKind junk)
+    # - we may move away from AST in general ...
 
     if isinstance(item, Code):
         # match up with node (this should be easy!)
-        return UncategorizedStmt(
-            src = item, ast=None, # node = next(node_itr)
+        return parser.parse_stmt(
+            token_stream=peekable(item.tokens), src=item
         )
     elif isinstance(item, _LevelData):
         # getting ast is a little tricky
@@ -1042,22 +1267,28 @@ def _reconcile_item_nodes(item, defined_macros, node_itr):
             if isinstance(branch_item, PreprocessorDirective):
                 condition_stmt = branch_item
             else:
-                condition_stmt = UncategorizedStmt(src=branch_item, ast=None)
+                condition_stmt = parser.parse_stmt(
+                    token_stream=peekable(branch_item.tokens),
+                    src=branch_item
+                )
             bundle_list = []
             for entry in content_l:
                 if not isinstance(entry, (Code, _LevelData)):
                     bundle_list.append(entry)
                 else:
-                    bundle_list.append(
-                        _reconcile_item_nodes(entry, defined_macros, node_itr)
-                    )        
+                    bundle_list.append(_reconcile_item_nodes(
+                        parser, entry, defined_macros, node_itr
+                    ))
             ccpair_list.append(_ConditionContentPair(
                 condition_stmt, bundle_list
             ))
         if isinstance(level.end_item, PreprocessorDirective):
             end_stmt = level.end_item
         else:
-            end_stmt = UncategorizedStmt(src=level.end_item, ast=None)
+            end_stmt = parser.parse_stmt(
+                token_stream=peekable(level.end_item.tokens),
+                src=level.end_item
+            )
         return ControlConstruct(ccpair_list, end_stmt)
 
     else:
@@ -1086,6 +1317,8 @@ def process_impl_section(identifiers, src_items,
         const.name for const in identifiers.constants if const.is_macro
     ]
 
+    parser = Parser(identifiers)
+
     for item in src_iter:
         if not isinstance(item, (PreprocessorDirective, Code)):
             entries.append(item)
@@ -1098,7 +1331,7 @@ def process_impl_section(identifiers, src_items,
         else:
             tmp_item = _process_impl_items(item, src_iter)
             entries.append(_reconcile_item_nodes(
-                tmp_item, defined_macros, node_itr
+                parser, tmp_item, defined_macros, node_itr
             ))
 
     return entries

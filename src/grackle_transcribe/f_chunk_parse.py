@@ -136,6 +136,35 @@ class ChunkKind(Enum):
 
 # uncategorized will correspond to assignments and built-in procedures (like alloc, format, write)
 
+class BuiltinFn(Enum):
+    def __new__(cls, value, regex_list):
+        obj = object.__new__(cls)
+        obj._value_ = value
+        obj.regex = re.compile(
+            "(" + "|".join([f"({elem})" for elem in regex_list]) + ")",
+            re.IGNORECASE
+        )
+        return obj
+
+    abs = (1, [r'abs'])
+    max = (2, [r'max'])
+    min = (3, [r'min'])
+    int = (4, [r"int"])
+
+class BuiltinProcedure(Enum):
+    def __new__(cls, value, regex_list):
+        obj = object.__new__(cls)
+        obj._value_ = value
+        obj.regex = re.compile(
+            "(" + "|".join([f"({elem})" for elem in regex_list]) + ")",
+            re.IGNORECASE
+        )
+        return obj
+
+    allocate = (1, [r'allocate'])
+    deallocate = (2, [r'deallocate'])
+
+
 class Type(Enum):
     """
     Represents a type.
@@ -194,6 +223,10 @@ class Operator(Enum):
     def dependendent_operand_count(self):
         return self._is_binary_op is None
 
+
+    # this has to go first so that it doesn't override other operators
+    DEFINED = (0, [r"\.[a-z]+\."], None) # defined op
+
     CONCAT = (1, [r"//"], True) # R712 concat-op
     POW = (2, [r"\*\*"], True) # R708 power-op
     MULTIPLY = (3, [r"\*"], True) # R709 mult-op
@@ -219,7 +252,6 @@ class Operator(Enum):
     OR = (17, [r"\.OR\."], True) # or-op R721
     EQV = (18, [r"\.EQV\."], True) # equiv-op R722
     NEQV = (19, [r"\.NEQV\."], True) # equiv-op R722
-    DEFINED = (20, [r"\.[a-z]+\."], None) # defined op
 
 _reqs = {
     ChunkKind.SubroutineDecl : _ClassifyReq(
@@ -345,6 +377,8 @@ def _make_token_map():
         (Literal.logical, r'\.((TRUE)|(FALSE))\.' + f'(_{_KIND_PARAM_REGEX})?'),
     ]
 
+    all_inputs += [(e,e.regex) for e in BuiltinFn]
+
 
     all_inputs += [
 
@@ -407,7 +441,7 @@ def _replace_internal_token_types(token_l, has_label = False):
 
     for i, token in enumerate(token_l):
         try:
-            unary_op, binary_op = _INTERNAL_TOKEN_TYPE_MAP[token]
+            unary_op, binary_op = _INTERNAL_TOKEN_TYPE_MAP[token.type]
         except KeyError:
             continue
 
@@ -428,12 +462,19 @@ def _replace_internal_token_types(token_l, has_label = False):
             'arbitrary-name', Literal.real, Literal.integer, ')'
         ):
             choice = binary_op
-        elif prev_tok.type in (')', '=', ','):
+        elif prev_tok.string in (')', '=', ','):
             choice = unary_op
         else:
+            print(compressed_concat_tokens(token_l))
             raise ValueError("Encountered an unexpected scenario")
 
         token_l[i] = token._replace(type = choice)
+
+    if any(t.type in _INTERNAL_TOKEN_TYPE_MAP for t in token_l):
+        raise AssertionError(
+            "somehow an internal token was missed within \n"
+            f"{compressed_concat_tokens(token_l)}"
+        )
 
 # in fixed form, if the 6th column is occupied by anything other than a blank
 # or 0 (including a !), then it is a continuation line!
@@ -531,7 +572,11 @@ def scan_chunk(chunk_lines):
 
 
     _replace_internal_token_types(tokens, has_label = has_label)
-    assert not any(t in _INTERNAL_TOKEN_TYPE_MAP for t in tokens)
+    if any(t.type in _INTERNAL_TOKEN_TYPE_MAP for t in tokens):
+        raise AssertionError(
+            "somehow an internal token was missed within \n"
+            f"{compressed_concat_tokens(tokens)}"
+        )
 
     if expect_full_match_token and len(tokens) != (1+has_label):
         raise ValueError(

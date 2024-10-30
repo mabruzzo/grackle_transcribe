@@ -506,6 +506,7 @@ class CppTranslator(EntryVisitor):
         return None
 
     def visit_Stmt(self, entry):
+        print(entry.__class__.__name__)
         self._passthrough_SrcItem(entry.item)
 
     def visit_ControlConstruct(self, entry):
