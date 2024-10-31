@@ -3,15 +3,12 @@ from contextlib import ExitStack
 import re
 import shutil
 
+from .identifiers import Constant
+
 from .subroutine_entity import (
     Declaration,
-    Stmt,
-    ControlConstruct,
     build_subroutine_entity,
-    Constant
-)
-from .subroutine_entity import (
-    IdentifierExpr, LiteralExpr
+    ControlConstruct
 )
 
 from .src_model import (
@@ -25,8 +22,12 @@ from .src_model import (
     get_source_regions
 )
 
+from .parser import (
+     IdentifierExpr, LiteralExpr, Standard1TokenStmt, Stmt, UncategorizedStmt
+)
 
-from .f_chunk_parse import Type, ChunkKind, Literal, _NAME_REGEX
+
+from .token import Type, ChunkKind, Literal, _NAME_REGEX
 
 # an entry is one of the following types:
 # -> we explicitly forbid it from being a Code instance (although other types
@@ -506,10 +507,21 @@ class CppTranslator(EntryVisitor):
         return None
 
     def visit_Stmt(self, entry):
-        print(entry.__class__.__name__)
+        # here is the idea: we should explicitly try to:
+        # -> write the label
+        # -> use spacing from the tokens
+        # -> make sure to print trailing comments
+
+        print_vals = [entry.__class__.__name__]
+        if isinstance(entry, Standard1TokenStmt):
+            print_vals.append(entry.tok_type())
+        elif isinstance(entry, UncategorizedStmt):
+            print_vals.append(entry.src.lines)
+        print(*print_vals)
         self._passthrough_SrcItem(entry.item)
 
     def visit_ControlConstruct(self, entry):
+        print(f"---CONTROLCONSTRUCT: {entry.kind}")
         for (condition, contents) in entry.condition_contents_pairs:
             self.dispatch_visit(condition)
             for content_entry in contents:

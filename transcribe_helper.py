@@ -1,9 +1,5 @@
-from grackle_transcribe.f_chunk_parse import (
-    process_code_chunk, ChunkKind, Type,
-    _CONTINUATION_LINE as _CONTINUE_PATTERN
-)
+from grackle_transcribe.token import Type
 from grackle_transcribe.src_model import *
-from grackle_transcribe.f_ast_load import create_ast
 from grackle_transcribe.subroutine_entity import build_subroutine_entity
 
 from grackle_transcribe.writer import write_full_copy, transcribe
@@ -26,12 +22,7 @@ def c_like_fn_signature(subroutine):
     return rslt
 
 
-
-if False:
-    create_ast('solve_rate_cool_g.F', 'dummy2.txt', double_precision = False)
-
-elif True:
-
+if __name__ == '__main__':
     import os
     PREFIX = '/Users/mabruzzo/packages/c++/grackle/src/clib/'
     if False:

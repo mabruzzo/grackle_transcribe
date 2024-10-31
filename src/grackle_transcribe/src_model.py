@@ -8,8 +8,13 @@ from functools import partial
 import re
 from typing import NamedTuple, Optional
 
-from .f_chunk_parse import process_code_chunk, ChunkKind
-from .f_chunk_parse import _CONTINUATION_LINE as _CONTINUE_PATTERN
+from .token import (
+    Keyword,
+    _CONTINUATION_LINE as _CONTINUE_PATTERN,
+    process_code_chunk,
+    scan_chunk,
+    token_has_type
+)
 
 class Origin(NamedTuple):
     lineno: int
@@ -179,6 +184,9 @@ class Code(SrcItem):
         self.tokens = tokens
         self.trailing_comment_start = trailing_comment_start
         self.has_label = has_label
+
+    def first_token_has_type(self, type_spec):
+        return token_has_type(self.tokens[0], type_spec)
 
     @property
     def lines(self):
@@ -419,19 +427,20 @@ class ItSrcRegion:
 
         is_routine = isinstance(cur_pairs[0][1], Code)
         if is_routine:
-            kind = cur_pairs[0][1].kind
-            if kind != ChunkKind.SubroutineDecl:
-                print(scan_chunk(item.lines))
+            if not cur_pairs[0][1].first_token_has_type(Keyword.SUBROUTINE):
+
+                first_tok = cur_pairs[0][1].tokens[0]
+                print(scan_chunk(cur_pairs[0][1].lines))
                 raise RuntimeError(
-                    "Expected the first code chunk in a routine to be: "
-                    f"{ChunkKind.SubroutineDecl!r}, not {kind!r}"
+                    "Expected the first token of the code chunk in a routine "
+                    f"to the subroutine keyword, not {first_tok!r}"
                 )
 
             for pair in self._item_itr:
                 cur_pairs.append(pair)
                 _, item = pair
                 if isinstance(item, Code):
-                    if item.kind == ChunkKind.EndRoutine:
+                    if item.first_token_has_type(Keyword.ENDROUTINE):
                         break
         else:
             for pair in self._item_itr:
@@ -457,37 +466,6 @@ class ItSrcRegion:
 
         return region
 
-
-
-
 def get_source_regions(provider):
     return ItSrcRegion(provider)
 
-
-if __name__ == '__main__':
-
-    import os
-    PREFIX = '/Users/mabruzzo/packages/c++/grackle/src/clib/'
-    if True:
-        fnames = [fname for fname in os.listdir(PREFIX) if fname.endswith('.F')]
-    else:
-        fnames = ['solve_rate_cool_g.F']
-    for fname in fnames:
-        print()
-        print(fname)
-        with open(os.path.join(PREFIX, fname), 'r') as f:
-            provider = LineProvider(f)
-            for lineno, item in get_items(provider):
-                if isinstance(item, OMPDirective):
-                    print(lineno, "OMPDIRECTIVE")
-                elif isinstance(item, Code):
-                    kind, tokens, trailing_comment_start, has_label \
-                        = process_code_chunk(item.lines)
-                    if kind == ChunkKind.Uncategorized:
-                        print(lineno, has_label, [token.string for token in tokens])
-                    else:
-                        pass
-                        #print(lineno, kind, has_label)
-                else:
-                    pass
-                    #print(lineno, item.lines)

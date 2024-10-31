@@ -1,6 +1,5 @@
-from grackle_transcribe.f_chunk_parse import (
-    process_code_chunk, ChunkKind, Type,
-    _CONTINUATION_LINE as _CONTINUE_PATTERN
+from grackle_transcribe.token import (
+    process_code_chunk, Type,
 )
 from grackle_transcribe.src_model import *
 from grackle_transcribe.f_ast_load import create_ast
@@ -12,25 +11,8 @@ import filecmp
 import sys
 
 
-def c_like_fn_signature(subroutine):
-    type_map = {Type.i32: "int", Type.i64: "long long",
-                Type.f32: "float", Type.f64: "double",
-                Type.logical: 'bool',
-                Type.gr_float: "gr_float"}
-    arg_list = (
-        f"  {type_map[arg.type]}* {arg.name}"
-        for arg in subroutine.arguments
-    )
-    rslt = f"void {subroutine.name}(\n" + ',\n'.join(arg_list) + '\n)'
-    return rslt
 
-
-
-if False:
-    create_ast('solve_rate_cool_g.F', 'dummy2.txt', double_precision = False)
-
-
-elif True:
+if True:
 
     import os
     PREFIX = '/Users/mabruzzo/packages/c++/grackle/src/clib/'
@@ -95,16 +77,6 @@ elif False:
         else:
             raise RuntimeError("the copied file isn't the same!")
         
-        #with open(os.path.join(PREFIX, fname), 'r') as f:
-        #    provider = LineProvider(f)
-        #    it = get_source_regions(provider)
-        #    for region in it:
-        #        if not region.is_routine:
-        #            continue
-        #        subroutine = build_subroutine_entity(region, it.prologue)
-        #        #print(c_like_fn_signature(subroutine),'\n')
-        #        print(f" -- {subroutine.name}")
-        #        #sys.exit(0)
         if False:
             """
             for region in it:
