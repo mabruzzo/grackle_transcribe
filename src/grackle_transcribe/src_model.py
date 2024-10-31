@@ -182,7 +182,7 @@ class Code(SrcItem):
 
         self.kind = kind
         self.tokens = tokens
-        self.trailing_comment_start = trailing_comment_start
+        self.trailing_comment_start = tuple(trailing_comment_start)
         self.has_label = has_label
 
     def first_token_has_type(self, type_spec):

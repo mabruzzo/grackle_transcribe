@@ -4,6 +4,8 @@
 #    UNDEFINED = auto()
 #
 
+from .utils import index_non_space
+
 from enum import Enum, auto
 from functools import partial
 import itertools
@@ -485,17 +487,16 @@ class Tokenizer:
         Misc
     )
 
-    _skip_regex = re.compile("[ \t]+")
-
-    def tokenize(self, chunk_lines):
+    def tokenize(self, chunk_entries):
         tokens = []
         trailing_comment_start = []
         expect_full_match_token = False
 
-        for lineno, line in enumerate(chunk_lines):
+        for lineno, line in enumerate(chunk_entries):
+            trailing_comment_start.append(None)
             pos = 0
             is_first_line = (lineno == 0)
-            is_last_line_in_chunk = (lineno+1) == len(chunk_lines)
+            is_last_line_in_chunk = (lineno+1) == len(chunk_entries)
             if not isinstance(line, str):
                 # this means hit a comment embedded in the chunk!
                 assert lineno != 0
@@ -508,12 +509,13 @@ class Tokenizer:
                 pos = m.end()
 
             while pos < len(line):
-                if (m := self._skip_regex.match(line, pos=pos)):
-                    pos = m.end()
+                next_nonspace = index_non_space(line, pos=pos, dflt=None)
+                if next_nonspace != pos:
+                    pos = len(line) if next_nonspace is None else next_nonspace
                     continue
                 elif line[pos] == '!':
                     assert line[pos-1].isspace()
-                    trailing_comment_start.append((lineno,pos))
+                    trailing_comment_start[-1] = pos
                     break
 
                 best_match_type = None
@@ -646,7 +648,9 @@ def scan_chunk(chunk_lines):
         chunk_lines = [chunk_lines]
     return Tokenizer().tokenize(chunk_lines)
 
-    
+
+
+        
 
 
 def process_code_chunk(chunk_lines):

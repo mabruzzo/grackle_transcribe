@@ -22,8 +22,11 @@ from .src_model import (
     get_source_regions
 )
 
+from .stringify import FormattedCodeEntryBuilder
+
 from .parser import (
-     IdentifierExpr, LiteralExpr, Standard1TokenStmt, Stmt, UncategorizedStmt
+     IdentifierExpr, LiteralExpr, Standard1TokenStmt, Stmt, UncategorizedStmt,
+     _iterate_tokens
 )
 
 
@@ -83,6 +86,9 @@ class _Consumer:
         fn(arg)
 
 def _passthrough_SrcItem(consumer,entry):
+    if isinstance(entry, str):
+        consumer.consume(entry)
+        return
     if not isinstance(entry, SrcItem):
         raise TypeError(f"entry can't have type {entry.__class__.__name__}")
     lines = entry.lines
@@ -122,7 +128,48 @@ class UnchangedTranslator(EntryVisitor):
             _passthrough_SrcItem(self.consumer, entry.src)
 
     def visit_Stmt(self, entry):
-        _passthrough_SrcItem(self.consumer,entry.item)
+        if entry.item.has_label:
+            _passthrough_SrcItem(self.consumer,entry.src)
+        else:
+            builder = FormattedCodeEntryBuilder(entry.src)
+            for tok in entry.src.tokens:
+                builder.put(tok)
+            new_entries = builder.build()
+
+            assert len(new_entries) == len(entry.src.entries)
+            for i, ref in enumerate(entry.src.entries):
+                if isinstance(new_entries[i], str):
+                    if new_entries[i].rstrip() != ref.rstrip():
+                        raise RuntimeError(
+                            "MISMATCH: \n"
+                            f" -> new: {new_entries[i].strip()!r}\n"
+                            f" -> ref: {ref.strip()!r}\n"
+                        )
+
+            if False and (new_entries != entry.src.entries):
+                def _pprint(l):
+                    return (
+                        '[\n' +
+                        '        ' +
+                        ',\n       '.join(repr(e) for e in l ) +
+                        '\n     ]'
+                    )
+                raise RuntimeError(
+                    "Reconstructed entries:\n"
+                    f" -> {_pprint(new_entries)}\n"
+                    "Original:\n"
+                    f" -> {_pprint(entry.src.entries)}"
+                )
+            if True:
+                _passthrough_SrcItem(self.consumer,entry.src)
+            else:
+                for chunk in new_entries:
+                    _passthrough_SrcItem(self.consumer,chunk)
+
+
+
+
+
 
     def visit_ControlConstruct(self, entry):
         for (condition, contents) in entry.condition_contents_pairs:
