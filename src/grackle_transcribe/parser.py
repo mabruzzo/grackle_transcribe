@@ -61,6 +61,14 @@ class ColonExpr(Expr):
     def iter_contents(self): yield self.token
 
 @dataclasses.dataclass(frozen=True)
+class AddressOfExpr(Expr):
+    # put in by hand by us for calls to procedures (will make translation a
+    # lot easier)
+    wrapped: Expr
+
+    def iter_contents(self): yield self.wrapped
+
+@dataclasses.dataclass(frozen=True)
 class UnaryOpExpr(Expr):
     op: Token
     operand: Expr
@@ -86,7 +94,7 @@ def _check_delim_sequence(seq, odd_index_check):
             raise ValueError(f"element {i} has an invalid value")
 
 @dataclasses.dataclass(frozen=True)
-class BinaryOpSeqExpr(Expr):
+class NonPOWBinaryOpSeqExpr(Expr):
     # the idea is that we don't want to deal with operator precedence
     seq: Tuple[Union[Expr,Token], ...]
     
@@ -94,6 +102,14 @@ class BinaryOpSeqExpr(Expr):
         _check_delim_sequence(self.seq, lambda e: e.is_always_binary_op())
 
     def iter_contents(self): yield from self.seq
+
+@dataclasses.dataclass(frozen=True)
+class POWOpExpr(Expr):
+    # this has highest precedence of the operators (so its okay to deal with
+    # it by itself
+    base: Expr
+    pow_tok: Token
+    exponent: Expr
 
 @dataclasses.dataclass(frozen=True)
 class AssocExpr(Expr):
@@ -130,6 +146,7 @@ class ArgList:
         for i, entry in enumerate(self.seq):
             if (i % 2) == 0:
                 yield entry
+
 
 @dataclasses.dataclass(frozen=True)
 class FnEval(Expr):
@@ -181,12 +198,6 @@ class UncategorizedStmt(Stmt):
 
     def iter_contents(self): yield from self.src.tokens
 
-@dataclasses.dataclass(frozen=True)
-class WriteStmt(Stmt):
-    # at some point in the future, we will flesh this out
-    src: Code
-
-    def iter_contents(self): yield from self.src.tokens
 
 @dataclasses.dataclass(frozen=True)
 class Standard1TokenStmt(Stmt):
@@ -312,18 +323,16 @@ class DoWhileStmt(Stmt):
         yield self.condition
 
 @dataclasses.dataclass(frozen=True)
-class DoStmt(Stmt):
+class DoIndexList:
+    # this is NOT an expression or statement, but it contains them!
     src: Code
-    do_tok: Token
     init_stmt: ScalarAssignStmt
     comma1_tok: Token
     limit_expr: Expr
     comma2_tok: Optional[Token]
     increment_expr: Optional[Token]
 
-
     def __post_init__(self):
-        assert token_has_type(self.do_tok, Keyword.DO)
         assert isinstance(self.init_stmt, ScalarAssignStmt)
         assert token_has_type(self.comma1_tok, ',')
         assert isinstance(self.limit_expr, Expr)
@@ -346,6 +355,118 @@ class DoStmt(Stmt):
 
     @property
     def has_increment_expr(self): return self.increment_expr is not None
+
+
+@dataclasses.dataclass(frozen=True)
+class ImpliedDoList:
+    # this is NOT an expression or statement, but it contains them!
+    #
+    # this is not very generic either, but is probably good enough for each
+    # relevant case within Grackle
+    src: Code
+    outer_l_tok: Token
+    arr_name_tok: Token
+    inner_l_tok: Token
+    index_name_tok: Token
+    inner_r_tok: Token
+    first_comma: Token
+    do_index_list: DoIndexList
+    outer_r_tok: Token
+
+    def __post_init__(self):
+        assert self.outer_l_tok.string == '('
+        assert token_has_type(self.arr_name_tok, "arbitrary-name")
+        assert self.inner_l_tok.string == '('
+        assert token_has_type(self.index_name_tok, "arbitrary-name")
+        assert self.inner_r_tok.string == ')'
+        assert isinstance(self.do_index_list, DoIndexList)
+        assert self.outer_r_tok.string == ')'
+
+    def iter_contents(self):
+        yield self.outer_l_tok
+        yield self.arr_name_tok
+        yield self.inner_l_tok
+        yield self.index_name_tok
+        yield self.inner_r_tok
+        yield self.first_comma
+        yield self.do_index_list
+        yield self.outer_r_tok
+
+@dataclasses.dataclass(frozen=True)
+class DoStmt(Stmt):
+    src: Code
+    do_tok: Token
+    do_idx_list: DoIndexList
+
+    def __post_init__(self):
+        assert token_has_type(self.do_tok, Keyword.DO)
+        assert isinstance(self.do_idx_list, DoIndexList)
+
+    def iter_contents(self):
+        yield self.do_tok
+        yield self.do_idx_list
+
+    # the following are for backwards compatability
+    @property
+    def has_increment_expr(self): return self.do_idx_list.has_increment_expr
+
+    @property
+    def init_stmt(self): return self.do_idx_list.init_stmt
+
+    @property
+    def comma1_tok(self): return self.do_idx_list.comma1_tok
+
+    @property
+    def limit_expr(self): return self.do_idx_list.limit_expr
+
+    @property
+    def comma2_tok(self): return self.do_idx_list.comma2_tok
+
+    @property
+    def increment_expr(self): return self.do_idx_list.increment_expr
+
+
+
+@dataclasses.dataclass(frozen=True)
+class WriteStmt(Stmt):
+    # at some point in the future, we will flesh this out
+    src: Code
+    write_tok: Token
+    # control-list tokens
+    clist_left: Token
+    clist_arg0: Token
+    clist_comma: Token
+    clist_arg1: Token
+    clist_right: Token
+    # output-list entries
+    output_list: Union[ImpliedDoList, Tuple[Union[Expr,Token], ...]]
+
+    def __post_init__(self):
+        assert self.write_tok.type == Keyword.WRITE
+        assert self.clist_left.string == '('
+        if token_has_type(self.clist_arg0, Literal.integer):
+            # other values theoretically allowed
+            assert self.clist_arg0.string in ['0', '6']
+        else:
+            assert self.clist_arg0.string == '*'
+            # could also store a variable-name, but that shouldn't come up
+        assert self.clist_comma.string == ','
+        assert (
+            token_has_type(self.clist_arg1, Literal.string) or
+            self.clist_arg1.string == '*'
+        )
+        assert self.clist_right.string == ')'
+        if not isinstance(self.output_list, ImpliedDoList):
+            _check_delim_sequence(self.output_list, lambda e: e.string == ',')
+
+    def writes_to_stdout(self): return self.clist_arg0.string in ['0', '*']
+    def writes_to_stderr(self): return self.clist_arg0.string == '6'
+
+    def format_specifier(self):
+        if self.clist_arg1.string == '*': return None
+        return self.clist_arg1
+
+
 
 def is_itr_exhausted(itr):
     return bool(itr) == False
@@ -386,12 +507,27 @@ class Parser:
             )
         return None
 
-    def _parse_arg_list(self, token_stream):
-        l = self._match_ttype('(', token_stream, require_match=True)
-        seq = [self._parse_expr(token_stream)]
+    def _parse_delimited(self, token_stream, addressof=False):
+        tmp = self._parse_expr(token_stream)
+        if addressof:
+            seq = [AddressOfExpr(tmp)]
+        else:
+            seq = [tmp]
+        count = 1
+
         while self._match_ttype(',', token_stream, consume=False) is not None:
             seq.append(self._match_ttype(',', token_stream))
-            seq.append(self._parse_expr(token_stream))
+            tmp = self._parse_expr(token_stream)
+            if addressof:
+                tmp = AddressOfExpr(tmp)
+            seq.append(tmp)
+            count+=1
+
+        return seq
+
+    def _parse_arg_list(self, token_stream, addressof=False):
+        l = self._match_ttype('(', token_stream, require_match=True)
+        seq = self._parse_delimited(token_stream, addressof=addressof)
         r = self._match_ttype(')', token_stream, require_match=True)
         return ArgList(left=l, seq=seq, right=r)
 
@@ -456,16 +592,23 @@ class Parser:
             return out
 
         else:
-            raise RuntimeError("NO IDEA HOW TO HANDLE THIS CASE")
+            raise RuntimeError(f"NO IDEA HOW TO HANDLE THIS CASE: {tok}")
 
     def _parse_expr(self, token_stream, *, expected_type = None):
         expr_l = [self._parse_single_expr(token_stream)]
         while tok := self._match_ttype(Operator, token_stream):
             assert tok.type.is_always_binary_op()
-            expr_l.append(tok)
-            expr_l.append(self._parse_single_expr(token_stream))
+            next_expr = self._parse_single_expr(token_stream)
+            if token_has_type(tok, Operator.POW):
+                tmp = POWOpExpr(
+                    base=expr_l.pop(), pow_tok=tok, exponent=next_expr
+                )
+                expr_l.append(tmp)
+            else:
+                expr_l.append(tok)
+                expr_l.append(next_expr)
 
-        out = expr_l[0] if (len(expr_l) == 1) else BinaryOpSeqExpr(expr_l)
+        out = expr_l[0] if (len(expr_l) == 1) else NonPOWBinaryOpSeqExpr(expr_l)
         if expected_type is not None:
             assert isinstance(out, expected_type)
         return out
@@ -502,14 +645,14 @@ class Parser:
             elif followed_by_arglist:
                 axlens = []
                 arg_l = self._parse_arg_list(token_stream)
+                _ARGLIST_EXPR_TYPES = (
+                    IdentifierExpr,ArrayAccess,LiteralExpr,NonPOWBinaryOpSeqExpr
+                )
                 for arg in arg_l.get_args():
                     if isinstance(arg, ColonExpr):
                         assert allocatable
                         axlens.append(None)
-                    elif isinstance(
-                        arg,
-                        (IdentifierExpr,ArrayAccess,LiteralExpr,BinaryOpSeqExpr)
-                    ):
+                    elif isinstance(arg, _ARGLIST_EXPR_TYPES):
                         axlens.append(arg)
                     else:
                         raise RuntimeError(
@@ -559,11 +702,10 @@ class Parser:
                 subroutine=self._match_ttype(
                     "arbitrary-name", token_stream, require_match=True
                 ),
-                arg_l = self._parse_arg_list(token_stream)
+                arg_l = self._parse_arg_list(token_stream, addressof=True)
             )
-        elif next_tok.string.lower() == 'write':
-            # we don't properly parse this case!
-            return WriteStmt(src=token_stream.src)
+        elif next_tok.type == Keyword.WRITE:
+            out = self.parse_write_stmt(token_stream)
         elif next_tok.type == Keyword.GOTO:
             out = GoToStmt(
                 src=token_stream.src,
@@ -645,7 +787,6 @@ class Parser:
             src=token_stream.src, lvalue=lval, assign_tok=assign_tok, rvalue=rval
         )
 
-
     def parse_if_stmt(self, token_stream):
         if_tok = self._match_ttype(
             Keyword.IF, token_stream, require_match=True
@@ -695,40 +836,86 @@ class Parser:
             ),
             condition = self._parse_assoc_expr(token_stream),
         )
-             
 
-    def parse_do_stmt(self, token_stream):
-        do_tok = self._match_ttype(
-            Keyword.DO, token_stream, require_match=True
-        )
-        #print(do_tok)
+    def parse_do_index_list(self, token_stream, parsing_dostmt=False):
+
         init_stmt = self.parse_stmt(token_stream, sub_statement=True)
         assert isinstance(init_stmt, ScalarAssignStmt)
         comma1_tok=self._match_ttype(
             ",", token_stream, require_match=True
         )
-        #print(comma1_tok)
         limit_expr = self._parse_expr(token_stream)
-        #print(limit_expr)
         if comma2_tok := self._match_ttype(",", token_stream):
             increment_expr = self._parse_expr(token_stream)
-        elif not is_itr_exhausted(token_stream):
+        elif parsing_dostmt and not is_itr_exhausted(token_stream):
             raise RuntimeError(
-                "something went wrong parsing do-statement. The next token is "
-                f"{next(token_stream)}"
+                "something went wrong parsing do-stmt. The next token "
+                f"is {next(token_stream)}"
             )
         else:
-            assert is_itr_exhausted(token_stream)
+            if parsing_dostmt:
+                assert is_itr_exhausted(token_stream)
             increment_expr = None
 
-        return DoStmt(
+        return DoIndexList(
             src=token_stream.src,
-            do_tok=do_tok,
             init_stmt=init_stmt,
             comma1_tok=comma1_tok,
             limit_expr=limit_expr,
             comma2_tok=comma2_tok,
             increment_expr=increment_expr
+        )
+
+    def parse_do_stmt(self, token_stream):
+        do_tok = self._match_ttype(
+            Keyword.DO, token_stream, require_match=True
+        )
+        do_index_list = self.parse_do_index_list(
+            token_stream, parsing_dostmt=True
+        )
+        return DoStmt(
+            src=token_stream.src,
+            do_tok=do_tok,
+            do_idx_list=do_index_list
+        )
+
+    def parse_write_stmt(self, token_stream):
+        kw = {'token_stream' : token_stream, 'require_match' : True}
+        _pairs = [
+            ('write_tok', Keyword.WRITE),
+            ('clist_left', '('),
+            ('clist_arg0', None),
+            ('clist_comma', ','),
+            ('clist_arg1', None),
+            ('clist_right', ')')
+        ]
+
+        tokens = {}
+        for name, expected in _pairs:
+            if expected is None:
+                tokens[name] = next(token_stream)
+            else:
+                tokens[name] = self._match_ttype(expected, **kw)
+
+        if token_stream.peek().string != '(':
+            output_list = self._parse_delimited(token_stream, addressof=False)
+        else:
+            list_toks = {
+                'outer_l_tok'    : self._match_ttype('(', **kw),
+                'arr_name_tok'   : self._match_ttype('arbitrary-name', **kw),
+                'inner_l_tok'    : self._match_ttype('(', **kw),
+                'index_name_tok' : self._match_ttype('arbitrary-name', **kw),
+                'inner_r_tok'    : self._match_ttype(')', **kw),
+                'first_comma'    : self._match_ttype(',', **kw),
+            }
+            do_index_list= self.parse_do_index_list(token_stream)
+            list_toks['outer_r_tok'] = self._match_ttype(')', **kw)
+            output_list = ImpliedDoList(
+                src=token_stream.src, do_index_list=do_index_list, **list_toks
+            )
+
+        return WriteStmt(
+            src=token_stream.src, output_list=output_list, **tokens
         )
 
 
@@ -764,15 +951,8 @@ class TokenStream:
 # some helper functions for analysis!
 
 def _default_itr_contents(obj, *, skipped_first_item_type=None):
-    if isinstance(obj, NamedTuple):
-        # temporary assumption
-        assert skipped_first_item_type is None
-        assert len(obj) > 0
-        for key in obj:
-            assert key is not None
-            yield key
-    elif dataclasses.is_dataclass(obj):
-        fields = dataclasses.fields(self)
+    if dataclasses.is_dataclass(obj):
+        fields = dataclasses.fields(obj)
         if skipped_first_item_type is not None:
             assert fields[0].type == skipped_first_item_type
             fields = fields[1:]
@@ -780,6 +960,13 @@ def _default_itr_contents(obj, *, skipped_first_item_type=None):
             out = getattr(obj, field.name)
             assert out is not None
             yield out
+    elif isinstance(obj, NamedTuple):
+        # temporary assumption
+        assert skipped_first_item_type is None
+        assert len(obj) > 0
+        for key in obj:
+            assert key is not None
+            yield key
     else:
         raise RuntimeError(
             f"a default iter_contents can't be created for {obj!r} since it "

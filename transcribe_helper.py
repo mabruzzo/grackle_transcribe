@@ -2,7 +2,8 @@ from grackle_transcribe.token import Type
 from grackle_transcribe.src_model import *
 from grackle_transcribe.subroutine_entity import build_subroutine_entity
 
-from grackle_transcribe.writer import write_full_copy, transcribe
+from grackle_transcribe.writer import write_full_copy
+from grackle_transcribe.translation_writer import transcribe
 
 import filecmp
 import sys

@@ -3,7 +3,7 @@
 #   useful tool, we would need to match up parts of a file with the AST
 
 from more_itertools import peekable
-from enum import auto, Flag
+from enum import auto, Flag, Enum
 from functools import partial
 import re
 from typing import NamedTuple, Optional
@@ -141,13 +141,36 @@ class Comment(SrcItem):
 
     def nlines(self): return len(self.lines)
 
+class OMPDirectiveKind(Enum):
+    UNCATEGORIZED = auto()
+    PARALLEL_DO = auto()
+    END_PARALLEL_DO = auto()
+    CRITICAL = auto()
+    END_CRITICAL = auto()
+    INCLUDE_OMP = auto()
+
 class OMPDirective(SrcItem):
     # represents an openmp directive
     # -> when compound is True, this may contain multiple kinds of items
-    def __init__(self, entries, compound = False, *, origin = None):
+    def __init__(self, entries, compound = False, *,
+                 kind = OMPDirectiveKind.UNCATEGORIZED,
+                 origin = None):
         self.entries = entries
         self.compound = compound
         self.origin = origin
+        if self.compound:
+            assert kind is OMPDirectiveKind.UNCATEGORIZED
+            if len(entries) == 3:
+                first_entry_kind = getattr(entries[0], 'kind', None)
+                last_entry_kind = getattr(entries[2], 'kind', None)
+                if ((first_entry_kind is PreprocKind.IFDEF_OPENMP) and
+                    (last_entry_kind is PreprocKind.ENDIF)):
+                    kind = entries[1].kind
+        if kind is PreprocKind.INCLUDE_OMP:
+            kind = OMPDirectiveKind.INCLUDE_OMP
+        elif not isinstance(kind, OMPDirectiveKind):
+            raise TypeError(kind)
+        self.kind = kind
 
     @property
     def lines(self):
@@ -258,11 +281,28 @@ def _try_omp_directive(line, provider):
             "encountered an omp-directive with leading whitespece. not sure "
             "this is allowed"
         )
-    elif _OMP_START_PATTERN.match(line):
+    elif (m := _OMP_START_PATTERN.match(line)) is not None:
         line_l = [line]
-        while _OMP_CONTINUE_PATTERN.match(provider.peek((None, ""))[1]):
-            line_l.append(next(provider)[1])
-        return OMPDirective(line_l)
+        stripped_lines = [line[m.end():].strip()]
+
+        def _peek(): return provider.peek((None,""))[1]
+        while (m := _OMP_CONTINUE_PATTERN.match(_peek())) is not None:
+            line = next(provider)[1]
+            line_l.append(line)
+            stripped_lines.append(line[m.end():].strip())
+
+        kind = OMPDirectiveKind.UNCATEGORIZED
+        concatenated = ' '.join(stripped_lines)
+        if re.match(r"^critical$", concatenated, re.I):
+            kind = OMPDirectiveKind.CRITICAL
+        elif re.match(r"^end\s+critical$",  concatenated, re.I):
+            kind = OMPDirectiveKind.END_CRITICAL
+        elif re.match(r"^parallel\s+do(\s|$)", concatenated, re.I):
+            kind = OMPDirectiveKind.PARALLEL_DO
+        elif re.match(r"^end\s+parallel\s+do$", concatenated, re.I):
+            kind = OMPDirectiveKind.END_PARALLEL_DO
+
+        return OMPDirective(line_l, kind = kind)
     return None
 
 _COMMENT_PATTERN = re.compile(r"^[\*cCdD]|(^\s*\!)")

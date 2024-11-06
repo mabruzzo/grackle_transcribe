@@ -143,6 +143,8 @@ class ChunkKind(Enum):
 
 # uncategorized will correspond to assignments and built-in procedures (like alloc, format, write)
 
+
+
 class _NullMatcher:
     def match(self, *args, **kwargs): return None
 
@@ -177,6 +179,11 @@ class _TokenEnum(Enum):
         # we are following the advice of the docs and overriding repr to hide
         # the unimportant underlying value
         return '<%s.%s>' % (self.__class__.__name__, self.name)
+
+# this includes pdfs for various standard drafts
+# https://github.com/kaby76/fortran?tab=readme-ov-file
+
+_NAME_REGEX = r"[a-z][a-z\d_]*"
 
 class BuiltinFn(_TokenEnum):
     abs   = (auto(), [r'abs'])
@@ -259,6 +266,8 @@ class Operator(_TokenEnum):
 # honestly, it might be better to construct these from discrete-tokens
 # after the fact so that we properly handle line continuations
 
+_WRITE_CONTROL_LIST_ARG = rf"([\*\d]|{_NAME_REGEX})"
+
 class Keyword(_TokenEnum):
     def __init__(self, value, regex_list, require_full_line_match):
         self._req_full_line_match = require_full_line_match
@@ -281,6 +290,8 @@ class Keyword(_TokenEnum):
     ENDIF      = (auto(), [r"end[ \t]*if"],   True)
     ENDDO      = (auto(), [r"end[ \t]*do"],   True)
     ENDROUTINE = (auto(), [r"end"],           True)
+
+    WRITE = (auto(), [r"write"], False)
 
 class Misc(_TokenEnum):
     """
@@ -373,10 +384,6 @@ class Token(NamedTuple):
 
 
 
-# this includes pdfs for various standard drafts
-# https://github.com/kaby76/fortran?tab=readme-ov-file
-
-_NAME_REGEX = r"[a-z][a-z\d_]*"
 _KIND_PARAM_REGEX = f"(?:(?:{_NAME_REGEX})|(?:\\d+))"
 
 # section 4.3.2.1 https://wg5-fortran.org/N1151-N1200/N1191.pdf

@@ -3,33 +3,28 @@ from contextlib import ExitStack
 import re
 import shutil
 
-from .identifiers import Constant
 
 from .subroutine_entity import (
     Declaration,
     build_subroutine_entity,
     ControlConstruct
 )
-
 from .src_model import (
     SrcItem,
     WhitespaceLines,
     Code,
     Comment,
+    PreprocKind,
     PreprocessorDirective,
     OMPDirective,
     LineProvider,
     get_source_regions
 )
-
-from .stringify import FormattedCodeEntryBuilder
-
 from .parser import (
      IdentifierExpr, LiteralExpr, Standard1TokenStmt, Stmt, UncategorizedStmt,
-     _iterate_tokens
+     _iterate_tokens, ControlConstructKind
 )
-
-
+from .stringify import FormattedCodeEntryBuilder
 from .token import Type, ChunkKind, Literal, _NAME_REGEX
 
 # an entry is one of the following types:
@@ -166,11 +161,6 @@ class UnchangedTranslator(EntryVisitor):
                 for chunk in new_entries:
                     _passthrough_SrcItem(self.consumer,chunk)
 
-
-
-
-
-
     def visit_ControlConstruct(self, entry):
         for (condition, contents) in entry.condition_contents_pairs:
             self.dispatch_visit(condition)
@@ -260,7 +250,6 @@ class ReplaceLogicalTranslator(EntryVisitor):
 
         if item.nlines()==1 and any(tok.string == '=' for tok in item.tokens):
 
-            #pattern = rf"^\s+{_NAME_REGEX}(\(i\))?\s*=\s*\.(TRUE|FALSE)\.\s*$"
             if re.match(
                 rf"^\s+{_NAME_REGEX}(\(i\))?\s*=\s*\.(TRUE|FALSE)\.\s*$",
                 item.lines[0], re.IGNORECASE
@@ -371,255 +360,3 @@ def replace_logical_with_mask(in_fname, out_fname):
                 for _, entry in region.lineno_item_pairs:
                     translator.dispatch_visit(entry)
     shutil.copyfile(src=temp_fname, dst=out_fname)
-
-# ========================================================================
-
-
-_TYPE_MAP = {
-    Type.i32: "int",
-    Type.i64: "long long",
-    Type.f32: "float",
-    Type.f64: "double",
-    Type.mask_type: "gr_mask_type",
-    Type.gr_float: "gr_float"
-}
-
-def c_like_fn_signature(subroutine):
-    arg_list = (
-        f"  {_TYPE_MAP[arg.type]}* {arg.name}"
-        for arg in subroutine.arguments
-    )
-    rslt = f"void {subroutine.name}(\n" + ',\n'.join(arg_list) + '\n)'
-    return rslt
-
-
-_TODO_PREFIX = '//_//'
-import textwrap
-
-# ok, so when we do this for real, we will need to be a little more careful
-# with c++ variables.
-# -> We should probably create a class where we map the fortran name to a C++
-#    variable or a member of a C++ struct
-
-class CppTranslator(EntryVisitor):
-
-    def __init__(self, consume_callback, identifier_spec):
-        super().__init__(ignore_unknown=False)
-        self.needs_dealloc = []
-        self.consumer = _Consumer(consume_callback)
-        def unaddressed_consume(arg):
-            consume_callback(f"  {_TODO_PREFIX} PORT: {arg}")
-        self.unaddressed_consumer = _Consumer(unaddressed_consume)
-        self.identifier_spec = identifier_spec
-        self.block_level=1
-
-    def _write_translated_line(self, line):
-        indent = '  ' * self.block_level
-        self.consumer.consume(f'{indent}{line}')
-
-    def _passthrough_SrcItem(self, entry, unaddressed = True):
-        if unaddressed:
-            _passthrough_SrcItem(self.unaddressed_consumer, entry)
-        else:
-            _passthrough_SrcItem(self.consumer, entry)
-
-    def _cpp_variable_name(self, fortran_identifier, as_ptr = False):
-        """
-        This produces the string C++ variable name that corresponds to the
-        Fortran variable name
-
-        Parameters
-        ----------
-        fortran_identifier: str or IdentifierExpr
-            name of the fortran variable
-        as_ptr: bool
-            When False, the string accesses the value of the variable. When
-            True, the string specifies the address of the value
-        """
-
-        # I think we will want to get a lot more sophisticated, (and maybe
-        # break this functionality out into a separate class/function) but to
-        # start out we do something extremely simple
-        # -> we might want to eventually return an intermediate class that
-        #    the translator then uses to get a pointer address or access value
-        #    based on context
-
-        # we assume that the variable name is unchanged
-        if isinstance(fortran_identifier, IdentifierExpr):
-            var_name = fortran_identifier.token.string
-        else:
-            var_name = fortran_identifier
-
-        if self.identifier_spec.is_arg(var_name):
-            return var_name if as_ptr else f'(*{var_name})'
-        elif ((self.identifier_spec.is_var(var_name)) or
-              (not self.identifier_spec[var_name].is_macro)):
-            return f'(&{var_name})' if as_ptr else var_name
-        else: # it is a macro constant
-            # NOTE: I vaguely recall that we may need to remap macro names
-            # between Fortran and C++, but that's a problem for the future
-            assert self.identifier_spec[var_name].is_macro
-            if as_ptr:
-                raise ValueError(
-                    "It doesn't make any sense to return a pointer to a macro "
-                    "that expands to a constant"
-                )
-            return var_name
-
-
-    def visit_WhitespaceLines(self, entry):
-        self._passthrough_SrcItem(entry, unaddressed = False)
-
-    def visit_Comment(self, entry):
-        if len(entry.lines) == 1:
-            line = entry.lines[0]
-            self._write_translated_line('//' + line.strip()[1:])
-        else:
-            for line in entry.lines:
-                self._write_translated_line('//' + line.strip()[1:])
-
-            #lines = textwrap.indent(
-            #    textwrap.dedent('\n'.join(entry.lines)), '// '
-            #).splitlines()
-            #for line in lines:
-            #    self._write_translated_line(line)
-
-    def visit_PreprocessorDirective(self, entry):
-        self._passthrough_SrcItem(entry)
-
-    def visit_OMPDirective(self, entry):
-        self._passthrough_SrcItem(entry)
-
-    def visit_Declaration(self, entry):
-        if isinstance(entry.src, (list, tuple)):
-            # this is the weird conditional parameter scenario
-            for elem in entry.src:
-                self._passthrough_SrcItem(elem)
-            return None
-        elif isinstance(entry.src, PreprocessorDirective):
-            self._passthrough_SrcItem(elem.src)
-            return None
-
-
-        scalar_decls, array_decls = [], []
-        for identifier in entry.identifiers:
-            if isinstance(identifier, Constant):
-                self._passthrough_SrcItem(entry.src)
-                return None
-            elif self.identifier_spec.is_arg(identifier.name):
-                continue
-            elif identifier.array_spec is None:
-                scalar_decls.append(identifier)
-            else:
-                array_decls.append(identifier)
-
-        ctype = _TYPE_MAP[entry.identifiers[0].type]
-
-        if array_decls == [] and scalar_decls == []:
-            self._write_translated_line(
-                '// -- removed line (previously just declared arg types) -- '
-            )
-            return None
-
-        if len(scalar_decls) > 0:
-            self._write_translated_line(
-                f"{ctype} {', '.join(v.name for v in scalar_decls)};"
-            )
-
-        for var in array_decls:
-            axlens = var.array_spec.axlens 
-            if (None in axlens) or var.array_spec.allocatable:
-                self._write_translated_line(
-                    f'{ctype}* {var.name}=NULL;'
-                )
-                # we don't need to worry about appending this to
-                # self.needs_dealloc, deallocation should be handled within the
-                # function body
-                continue
-
-            factors = []
-            for elem in axlens:
-                if isinstance(elem, LiteralExpr):
-                    factors.append(elem.token.string)
-                elif isinstance(elem, IdentifierExpr):
-                    factors.append(self._cpp_variable_name(elem, as_ptr=False))
-                else:
-                    raise RuntimeError("not equipped to handle this case yet")
-            self._write_translated_line(
-                f"{ctype}* {var.name} = "
-                f"({ctype}*)malloc({'*'.join(factors)}*sizeof({ctype}));"
-            )
-            self.needs_dealloc.append(var.name)
-
-        return None
-
-    def visit_Stmt(self, entry):
-        # here is the idea: we should explicitly try to:
-        # -> write the label
-        # -> use spacing from the tokens
-        # -> make sure to print trailing comments
-
-        print_vals = [entry.__class__.__name__]
-        if isinstance(entry, Standard1TokenStmt):
-            print_vals.append(entry.tok_type())
-        elif isinstance(entry, UncategorizedStmt):
-            print_vals.append(entry.src.lines)
-        print(*print_vals)
-        self._passthrough_SrcItem(entry.item)
-
-    def visit_ControlConstruct(self, entry):
-        print(f"---CONTROLCONSTRUCT: {entry.kind}")
-        for (condition, contents) in entry.condition_contents_pairs:
-            self.dispatch_visit(condition)
-            for content_entry in contents:
-                self.dispatch_visit(content_entry)
-        self.dispatch_visit(entry.end)
-
-
-def transcribe(in_fname, out_f):
-
-    temp_fname = './__my_dummy_file'
-    with open(in_fname, "r") as in_f:
-        provider = LineProvider(in_f, fname = in_fname)
-        it = get_source_regions(provider)
-
-        # handle outputs
-        def writer(arg):
-            out_f.write(f'{arg}\n')
-
-        writer("//_// TODO: ADD INCLUDE DIRECTIVES")
-        writer("")
-
-
-        for region in it:
-            if not region.is_routine:
-                continue
-            subroutine = build_subroutine_entity(region, it.prologue)
-
-
-            translator = CppTranslator(
-                writer, identifier_spec = subroutine.identifiers
-            )
-
-            #translator.dispatch_visit(subroutine.subroutine_stmt)
-            writer(c_like_fn_signature(subroutine))
-            writer("{")
-
-            for entry in subroutine.declaration_section:
-                translator.dispatch_visit(entry)
-            
-            writer("")
-            writer("  //_// TODO: TRANSLATE IMPLEMENTATION")
-            writer("")
-
-            for entry in subroutine.impl_section:
-                translator.dispatch_visit(entry)
-
-
-            writer("  // handle deallocation!")
-            for elem in translator.needs_dealloc:
-                writer(f"  free({elem});")
-            writer("}")
-            return
-
-
