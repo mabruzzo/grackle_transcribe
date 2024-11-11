@@ -478,7 +478,7 @@ def process_declaration_section(prologue_directives, src_items,
                 name, _ = identifier_pairs[0]
                 identifier_list.append(
                     Constant(
-                        name=name, type=item, is_macro=False,
+                        name=name, type=item.tokens[0].type, is_macro=False,
                         decl_section_index=index,
                     )
                 )

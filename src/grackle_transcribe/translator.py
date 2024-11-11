@@ -9,12 +9,14 @@ from .parser import (
     AddressOfExpr,
     ArrayAccess,
     CastExpr,
+    UnaryOpExpr,
     NonPOWBinaryOpSeqExpr,
     POWOpExpr,
     FnEval,
     IdentifierExpr,
     LiteralExpr,
     ScalarAssignStmt,
+    ArrayAssignStmt,
     Standard1TokenStmt,
     IfSingleLineStmt,
     IfConstructStartStmt,
@@ -22,8 +24,9 @@ from .parser import (
     CallStmt,
     DoStmt,
     DoWhileStmt,
+    GoToStmt,
     ImpliedDoList,
-    WriteStmt
+    WriteStmt,
 )
 
 from .stringify import (
@@ -42,11 +45,15 @@ from enum import Enum, auto
 from itertools import chain
 from typing import Any, List, NamedTuple, Optional, Tuple, Union
 
+def _get_translated_label(label_tok):
+    assert isinstance(label_tok, Token) and label_tok.type is Literal.integer
+    return f"label_{label_tok.string}"
+
 _TYPE_TRANSLATION_INFO = {
     Type.i32: ("int", "%d"),
     Type.i64: ("long long", "%lld"),
     Type.f32: ("float", "%g"),
-    Type.f64: ("double", "%g)"),
+    Type.f64: ("double", "%g"),
     Type.gr_float: ("gr_float", "%g"),
     Type.mask_type: ("gr_mask_type", "%d")
 }
@@ -55,17 +62,18 @@ _TYPE_MAP = dict((k,v[0]) for k,v in _TYPE_TRANSLATION_INFO.items())
 
 # we may want to revisit these to ensure consistency!
 _custom_fns = {
-    'pow' : 'std::pow',
-    # when we have 2 args, we should fall back to std::fmin
-    'min' : 'grackle::Impl::fmin',
-    # when we have 1 arg, we should fall back to std::fmax
-    'max' : 'grackle::Impl::fmax',
-    'log' : 'std::log',
-    'exp' : 'std::exp',
-    'abs' : 'std::fabs',
-    'dabs' : 'grackle::Impl::dabs',
-    'sqrt' : 'std::sqrt',
-    'mod' : 'grackle::Impl::mod'
+    ('pow', 2) : 'std::pow',
+    ('min', 2) : 'std::fmin',
+    ('min', 3) : 'grackle::impl::fmin',
+    ('min', 4) : 'grackle::impl::fmin',
+    ('max', 2) : 'std::fmax',
+    ('max', 3) : 'grackle::impl::fmax',
+    ('log', 1) : 'std::log',
+    ('exp', 1) : 'std::exp',
+    ('abs', 1) : 'std::fabs',
+    ('dabs', 1) : 'grackle::impl::dabs',
+    ('sqrt', 1) : 'std::sqrt',
+    ('mod', 2) : 'grackle::impl::mod'
 }
 
 # I don't love how I'm currently modelling types, but I don't know what the
@@ -400,6 +408,19 @@ def _binOperator_to_str(tok):
         case _:
             raise RuntimeError(f"No handling for {op_type}")
 
+def _strip_known_trailing_kind(tok):
+    # to be used with integers and floats
+    s = tok.string.upper()
+    for known_kind in ("_DKIND", "_DIKIND", "_RKIND"):
+        if s.endswith(known_kind):
+            stripped = tok.string[:-len(known_kind)]
+            kind = tok.string[(1-len(known_kind)):]
+            assert '_' not in stripped
+            return stripped, kind
+    if '_' in s:
+        raise NotImplementedError(f"{s} has a literal of unknown kind")
+    return tok.string, None
+
 def _Literal_to_str(tok):
     assert token_has_type(tok, Literal)
     # we may need to pass in a context object to help with interpretting some
@@ -425,27 +446,32 @@ def _Literal_to_str(tok):
                 str_val = bounding_quote.join(str_val.split(escaped_quote))
             return '"' + str_val.replace('"', r'\"') + '"'
 
-        case Literal.integer if '_' not in tok.string:
-            return tok.string
+        case Literal.integer:
+            stripped, kind = _strip_known_trailing_kind(tok)
+            if kind is not None:
+                assert kind.upper() in ("DKIND", "DIKIND")
+                return f'{stripped}LL'
+            return stripped
 
         case Literal.real:
+            stripped, kind = _strip_known_trailing_kind(tok)
+            stripped = stripped.lower()
 
-            if tok.string.lower().endswith("_dkind"):
-                tmp = tok.string[:-6]
-                if '_' in tmp:
-                    raise NotImplementedError()
-                if 'd' in tmp.lower():
-                    raise RuntimeError("Maybe this is allowed?")
-                return tmp
-            elif '_' in tok.string:
-                raise NotImplementedError()
-            elif 'd' in tok.string or 'D' in tok.string:
-                return tok.string.lower().replace('d', 'e')
-            elif 'e' in tok.string or 'E' in tok.string:
-                tmp = tok.string.lower()
-                out = tok.string + 'f' # single precision literal
+            if ('d' in stripped):
+                tmp, prefer_double = stripped.replace('d', 'e'), True
             else:
-                return tok.string + 'f'
+                tmp, prefer_double = stripped, False
+
+            if kind is None:
+                prefix = ''
+                suffix = '' if prefer_double else 'f'
+            elif kind.upper() in ("DKIND", "DIKIND"):
+                prefix, suffix = '', ''
+            else:
+                assert kind.upper() == 'RKIND'
+                ctype_name = _TYPE_TRANSLATION_INFO[Type.gr_float][0]
+                prefix, suffix = f'({ctype_name})(', ')'
+            return f'{prefix}{tmp}{suffix}'
 
         case _:
             raise NotImplementedError()
@@ -471,7 +497,7 @@ def _CastExpr_translations(arg, identifier_model, ret_desttype = False):
         mapping = {"4" : Type.f32,
                    "8" : Type.f64,
                    "rkind" : Type.gr_float,
-                   "dkind" : Type.f32}
+                   "dkind" : Type.f64}
     elif name_tok.string.lower() == "int":
         mapping = {"4" : Type.i32, "8" : Type.i64}
     else:
@@ -591,19 +617,28 @@ def _translate_expr(arg, identifier_model):
             ]
         case CastExpr():
             val = _CastExpr_translations(arg, identifier_model)
+        case UnaryOpExpr():
+            if arg.op.type not in [Operator.PLUS_UNARY, Operator.MINUS_UNARY]:
+                raise NotImplementedError()
+            val = [
+                Translation(arg.op, PRESERVE_TOK),
+                _translate_expr(arg.operand, identifier_model)
+            ]
         case POWOpExpr():
             val = [
                 _translate_expr(arg.base, identifier_model),
                 Translation(arg.pow_tok, ","),
                 _translate_expr(arg.exponent, identifier_model)
             ]
-            prepend_append_pair = (_custom_fns["pow"]+"(", ")")
+            prepend_append_pair = (_custom_fns["pow", 2]+"(", ")")
         case NonPOWBinaryOpSeqExpr():
             val = _NonPOWBinaryOpSeqExpr_translations(arg, identifier_model)
         case FnEval():
+            fn_name, arg_l = arg.fn_name, arg.arg_l
+            nargs = more_itertools.ilen(arg_l.get_args())
             try:
                 fn_name_trans = Translation(
-                    arg.fn_name, _custom_fns[arg.fn_name.string]
+                    fn_name, _custom_fns[fn_name.string, nargs]
                 )
             except KeyError:
                 raise NotImplementedError()
@@ -615,17 +650,6 @@ def _translate_expr(arg, identifier_model):
             raise NotImplementedError()
 
     return Translation(arg, val, prepend_append_pair)
-
-def _translate_ScalarAssignStmt(stmt, identifier_model):
-    t = Translation(
-        stmt,
-        [
-            _translate_expr(stmt.lvalue, identifier_model),
-            Translation(stmt.assign_tok, PRESERVE_TOK),
-            _translate_expr(stmt.rvalue, identifier_model)
-        ]
-    )
-    return t
 
 def _handle_write_stmt(stmt, identifier_model):
     if stmt.writes_to_stdout():
@@ -666,6 +690,19 @@ def _handle_write_stmt(stmt, identifier_model):
         elif isinstance(elem, CastExpr):
             arg_type = _CastExpr_translations(elem, identifier_model,
                                               ret_desttype=True)
+        elif isinstance(elem, FnEval):
+            # for now, we are just targetting a particular line of source code
+            if elem.fn_name.string.lower() != 'abs':
+                raise NotImplementedError()
+            arg_iter = elem.arg_l.get_args()
+            arg = next(arg_iter)
+            if not isinstance(arg, NonPOWBinaryOpSeqExpr):
+                raise NotImplementedError()
+            elif not isinstance(arg.seq[0], LiteralExpr):
+                raise NotImplementedError()
+            elif arg.seq[0].token.string.lower() != "0.1_dkind":
+                raise NotImplementedError()
+            arg_type = Type.f64
         else:
             raise NotImplementedError()
 
@@ -680,8 +717,89 @@ def _handle_write_stmt(stmt, identifier_model):
     if len(fn_args) == 0:
         full_stmt = f'{fn}({fmt_str_literal});'
     else:
-        full_stmt = f'{fn}({fmt_str_literal}, {", ".join(fn_args)});'
+        # we make a crude attempt at line wrapping
+        indent_len = len(fn) + 1
+        len_approx = len(fmt_str_literal) + sum(len(e) for e in fn_args)
+        if (indent_len + len_approx) > 66:
+            sep = ',\n' + (' '* indent_len)
+        else:
+            sep = ', '
+        full_stmt = f'{fn}({fmt_str_literal}{sep}{sep.join(fn_args)});'
     return full_stmt, False
+
+def _translate_ScalarAssignStmt(stmt, identifier_model):
+    t = Translation(
+        stmt,
+        [
+            _translate_expr(stmt.lvalue, identifier_model),
+            Translation(stmt.assign_tok, PRESERVE_TOK),
+            _translate_expr(stmt.rvalue, identifier_model)
+        ]
+    )
+    return t
+
+def _translate_ArrayAssignStmt(stmt, identifier_model):
+    # we are only going to handle small subsets of this
+    lvalue, rvalue = stmt.lvalue, stmt.rvalue
+    if not isinstance(lvalue,IdentifierExpr):
+        raise NotImplementedError()
+    l_var = identifier_model.fortran_identifier_props(lvalue.token.string)
+    dst_arg = identifier_model.cpp_variable_name(
+        l_var.name, IdentifierUsage.ArrAddress
+    )
+
+    if isinstance(rvalue, IdentifierExpr):
+        r_var = identifier_model.fortran_identifier_props(rvalue.token.string)
+        assert l_var.type == r_var.type
+        assert l_var.array_spec.rank == r_var.array_spec.rank
+        # we just assume that the shapes are the same (if they aren't, then the
+        # input fortran code is wrong!)
+        fn = 'std::memcpy'
+        input_arg = identifier_model.cpp_variable_name(
+            r_var.name, IdentifierUsage.ArrAddress
+        )
+    elif isinstance(rvalue, LiteralExpr):
+        s = _Literal_to_str(rvalue.token)
+        is_zero = (
+            (s.lower().endswith('ll') and (int(s[:-2]) == 0)) or
+            (s.lower().endswith('f') and (float(s[:-1]) == 0.0)) or
+            (float(s) == 0.0)
+        )
+        if is_zero:
+            fn = 'std::memset'
+            input_arg = '0'
+        else:
+            raise NotImplementedError()
+    else:
+        raise NotImplementedError()
+
+
+    if l_var.array_spec.rank == 1:
+        tmp = l_var.array_spec.axlens[0]
+        n_elem_str = identifier_model.cpp_variable_name(
+            tmp.token.string, IdentifierUsage.ScalarValue
+        )
+    else:
+        raise NotImplementedError()
+
+    cpp_type_name = _TYPE_TRANSLATION_INFO[l_var.type][0]
+    count_arg = f'sizeof({cpp_type_name})*{n_elem_str}'
+
+    return f'{fn}({dst_arg}, {input_arg}, {count_arg});', False
+
+
+    
+
+def _translate_GoToStmt(stmt, idenfitier_model):
+    label_name = _get_translated_label(stmt.label_expr.token)
+    t = Translation(
+        stmt,
+        [
+            Translation(stmt.goto_tok, "goto"),
+            Translation(stmt.label_expr, label_name),
+        ],
+    )
+    return t
 
 def _translate_stmt(stmt, identifier_model):
     """
@@ -694,15 +812,26 @@ def _translate_stmt(stmt, identifier_model):
     """
 
     match stmt:
+        case ArrayAssignStmt():
+            return _translate_ArrayAssignStmt(stmt, identifier_model)
         case ScalarAssignStmt():
             out = list(_translate_ScalarAssignStmt(stmt, identifier_model))
             return out, True
+
+        case GoToStmt():
+            out = list(_translate_GoToStmt(stmt, identifier_model))
+            return out, True
+
         case IfSingleLineStmt():
             if isinstance(stmt.consequent, ScalarAssignStmt):
                 consequent_trans = _translate_ScalarAssignStmt(
                     stmt.consequent, identifier_model
                 )
-            else: # GoToStmt or ScalarAssignStmt or ...
+            elif isinstance(stmt.consequent, GoToStmt):
+                consequent_trans = _translate_GoToStmt(
+                    stmt.consequent, identifier_model
+                )
+            else: # ArrayAssignStmt or ...
                 raise NotImplementedError()
             dummy = _DummyInjectedExpr([stmt])
             consequent_trans = Translation(
@@ -769,7 +898,6 @@ def _translate_stmt(stmt, identifier_model):
                 stmt.arg_l, identifier_model, is_index_list=False
             )
             return (leading_part + list(trailing_part)), True
-
         case WriteStmt():
             return _handle_write_stmt(stmt, identifier_model)
         case Standard1TokenStmt():
@@ -786,6 +914,8 @@ def _translate_stmt(stmt, identifier_model):
                     )
                 case Keyword.ELSE:
                     return "else", False
+                case Keyword.RETURN:
+                    return "return;", False
                 case _:
                     raise NotImplementedError()
         case _:

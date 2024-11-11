@@ -986,7 +986,10 @@ def iter_contents(obj):
     else:
         raise TypeError()
 
-def _iterate_tokens(arg):
+def iterate_true_contents(arg, predicate):
+    # basically we yield all conents where predicate(elem) returns True
+    # -> the idea is that we go down the stack until we hit True or we hit a
+    #    token
     stack = [iter_contents(arg)]
     while len(stack) > 0:
         try:
@@ -994,10 +997,16 @@ def _iterate_tokens(arg):
         except StopIteration:
             stack.pop()
         else:
-            if isinstance(elem, Token):
+            if predicate(elem):
                 yield elem
+            elif isinstance(elem, Token):
+                pass
             else:
                 stack.append(iter_contents(elem))
+
+def _iterate_tokens(arg):
+    def predicate(elem): return isinstance(elem, Token)
+    yield from iterate_true_contents(arg, predicate)
 
 def compressed_str_from_Expr(expr):
     return compressed_concat_tokens(_iterate_tokens(expr))
