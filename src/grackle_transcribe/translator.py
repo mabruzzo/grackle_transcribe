@@ -1,6 +1,13 @@
 import more_itertools
 
-from .identifiers import Constant
+from .cpp_identifier_model import (
+    IdentifierUsage,
+    _TYPE_MAP,
+    _TYPE_TRANSLATION_INFO,
+    _translate_allocatable_init,
+    _translate_deallocate,
+    ArrInitSpec
+)
 
 from .parser import (
     Expr,
@@ -24,6 +31,7 @@ from .parser import (
     CallStmt,
     DoStmt,
     DoWhileStmt,
+    BuiltinProcedureStmt,
     GoToStmt,
     ImpliedDoList,
     WriteStmt,
@@ -34,14 +42,11 @@ from .stringify import (
     TokenAlternative, concat_translated_pairs,
 )
 
-
 from .token import (
-    Token, Literal, Operator, Keyword, token_has_type, Type
+    Token, Literal, Operator, Keyword, token_has_type, Type, BuiltinProcedure
 )
 
-from collections import deque
 from dataclasses import dataclass
-from enum import Enum, auto
 from itertools import chain
 from typing import Any, List, NamedTuple, Optional, Tuple, Union
 
@@ -49,16 +54,6 @@ def _get_translated_label(label_tok):
     assert isinstance(label_tok, Token) and label_tok.type is Literal.integer
     return f"label_{label_tok.string}"
 
-_TYPE_TRANSLATION_INFO = {
-    Type.i32: ("int", "%d"),
-    Type.i64: ("long long", "%lld"),
-    Type.f32: ("float", "%g"),
-    Type.f64: ("double", "%g"),
-    Type.gr_float: ("gr_float", "%g"),
-    Type.mask_type: ("gr_mask_type", "%d")
-}
-
-_TYPE_MAP = dict((k,v[0]) for k,v in _TYPE_TRANSLATION_INFO.items())
 
 # we may want to revisit these to ensure consistency!
 _custom_fns = {
@@ -75,165 +70,6 @@ _custom_fns = {
     ('sqrt', 1) : 'std::sqrt',
     ('mod', 2) : 'grackle::impl::mod'
 }
-
-# I don't love how I'm currently modelling types, but I don't know what the
-# optimal way to do it is yet. leaving it for now...
-class _CppTypeModifier(Enum):
-    def __new__(cls, value, array_rank):
-        if isinstance(value, auto):
-            value = len(cls.__members__) + 1
-        obj = object.__new__(cls)
-        obj._value_ = value
-        obj.array_rank = array_rank
-        return obj
-
-    NONE = (auto(), None)
-    scalar_pointer = (auto(), None)
-    array_pointer_1D = (auto(), 1)
-    vector = (auto(), 1)
-    View2D = (auto(), 2)
-    View3D = (auto(), 3)
-    MACRO_CONST = (auto(), None)
-
-class _CppType(NamedTuple):
-    type : Type
-    modifier : _CppTypeModifier
-
-def _get_cpp_type(name, fortran_identifier_spec):
-    # in the future, we should probably create an object that stores the type
-    # (rather than always inferring it on the fly)
-
-    fortran_var = fortran_identifier_spec[name]
-    is_arg = fortran_identifier_spec.is_arg(name)
-    if getattr(fortran_var, 'array_spec', None) is None:
-        rank = None
-    else:
-        rank = fortran_var.array_spec.rank
-
-    if isinstance(fortran_var, Constant):
-        if fortran_var.is_macro:
-            modifier = _CppTypeModifier.MACRO_CONST
-        else:
-            modifier = _CppTypeModifier.NONE
-    elif (rank is None) and is_arg:
-        modifier = _CppTypeModifier.scalar_pointer
-    elif rank is None:
-        modifier = _CppTypeModifier.NONE
-    elif (rank == 1) and is_arg:
-        modifier = _CppTypeModifier.array_pointer_1D
-    elif rank == 1:
-        modifier = _CppTypeModifier.vector
-    elif fortran_var.array_spec.rank == 2:
-        modifier = _CppTypeModifier.View2D
-    elif fortran_var.array_spec.rank == 3:
-        modifier = _CppTypeModifier.View3D
-    else:
-        raise RuntimeError("should be unreachable")
-
-    assert rank == modifier.array_rank, "sanity check!"
-
-    return _CppType(fortran_var.type, modifier)
-
-
-# to do start using the following identifiers when passing querying the
-# identifier string from _IdentifierModel
-
-class IdentifierUsage(Enum):
-    ScalarValue = auto()
-    ScalarAddress = auto()
-    ArrValue = auto() # for numpy-like operations
-    ArrAddress = auto()
-    ArrAccessValue = auto()
-    ArrAccessAddress = auto()
-
-
-class _IdentifierModel:
-    # need to model the C++ data-type so we can properly provide .data
-    def __init__(self, fortran_identifier_spec):
-        self.fortran_identifier_spec = fortran_identifier_spec
-
-    def fortran_identifier_props(self, name):
-        return self.fortran_identifier_spec[name]
-
-    def cpp_variable_name(
-        self, fortran_identifier, identifier_usage, arr_ndim = None
-    ):
-        """
-        This produces the string C++ variable name that corresponds to the
-        Fortran variable name
-
-        Parameters
-        ----------
-        fortran_identifier: str or IdentifierExpr
-            name of the fortran variable
-        identifier_usage
-            describes how the identifier gets used
-        """
-        # I think we will want to get a lot more sophisticated, (and maybe
-        # break this functionality out into a separate class/function) but to
-        # start out we do something extremely simple
-        # -> we might want to eventually return an intermediate class that
-        #    the translator then uses to get a pointer address or access value
-        #    based on context
-
-        # we assume that the variable name is unchanged
-        if isinstance(fortran_identifier, IdentifierExpr):
-            var_name = fortran_identifier.token.string
-        else:
-            var_name = fortran_identifier
-
-        cpptype = _get_cpp_type(var_name, self.fortran_identifier_spec)
-        modifier = cpptype.modifier
-
-        match identifier_usage:
-            case IdentifierUsage.ScalarValue | IdentifierUsage.ScalarAddress:
-                need_ptr = (identifier_usage == IdentifierUsage.ScalarAddress)
-                if arr_ndim is not None:
-                    raise ValueError(
-                        "it makes no sense to specify arr_ndim"
-                    )
-                elif (
-                    (modifier == _CppTypeModifier.NONE) or
-                    (modifier == _CppTypeModifier.MACRO_CONST)
-                ):
-                    return f'&{var_name}' if need_ptr else var_name
-                elif modifier == _CppTypeModifier.scalar_pointer:
-                    return var_name if need_ptr else f'(*{var_name})'
-
-            case IdentifierUsage.ArrAddress:
-                if (arr_ndim is not None) and (arr_ndim != modifier.array_rank):
-                    raise ValueError(
-                        "the identifier doesn't have the expected rank"
-                    )
-                elif modifier == _CppTypeModifier.array_pointer_1D:
-                    return var_name
-                elif (
-                    (modifier == _CppTypeModifier.vector) or
-                    (modifier == _CppTypeModifier.View2D) or
-                    (modifier == _CppTypeModifier.View3D)
-                ):
-                    return f'{var_name}.data()'
-
-            case IdentifierUsage.ArrAccessValue:
-                _valid_modifiers = (
-                    _CppTypeModifier.array_pointer_1D,
-                    _CppTypeModifier.vector,
-                    _CppTypeModifier.View2D,
-                    _CppTypeModifier.View3D
-                )
-                if (arr_ndim is not None) and (arr_ndim != modifier.array_rank):
-                    raise ValueError(
-                        "the identifier doesn't have the expected rank"
-                    )
-                elif modifier in _valid_modifiers:
-                    return var_name
-
-        raise NotImplementedError(
-            "Something went very wrong! Can't handle:\n"
-            f" -> identifier_usage: {identifier_usage}\n"
-            f" -> modifier: {modifier}")
-
-
 
 
 # here is the (WORKING) organizational plan:
@@ -527,16 +363,17 @@ def _CastExpr_translations(arg, identifier_model, ret_desttype = False):
     ]
     return val
 
-def _arglist_translation_and_count(arg_l, identifier_model,
-                                   is_index_list=False):
-    val = [None] # a placeholder
+def _arglist_inner_contentseq_and_count(arg_l, identifier_model,
+                                        add_comma_suffix = False,
+                                        add_index_suffix = False):
+    val = []
     nargs = more_itertools.ilen(arg_l.get_args())
     cur_arg_index = -1
     for elem in arg_l.seq:
         if isinstance(elem, Expr):
             cur_arg_index += 1
             translation = _translate_expr(elem, identifier_model)
-            if is_index_list:
+            if add_index_suffix:
                 # From a correctness standpoint, it might be better if we
                 # injected an IndexArgExpr wrapper inside of the expression
                 # hierarchy before translation (i.e. during parsing or in an
@@ -547,7 +384,7 @@ def _arglist_translation_and_count(arg_l, identifier_model,
 
             # this is a really crude hack! (to override comma placement so that
             # it is always adjacent to the token)
-            if ((cur_arg_index+1) < nargs):
+            if add_comma_suffix and ((cur_arg_index+1) < nargs):
                 suffix += ","
 
             dummy = _DummyInjectedExpr([elem])
@@ -555,7 +392,15 @@ def _arglist_translation_and_count(arg_l, identifier_model,
         else:
             assert isinstance(elem, Token) and token_has_type(elem, ",")
             val.append(Translation(elem, SKIP_TOK))
-    val.append(None) # another placeholder
+    return val, nargs
+
+def _arglist_translation_and_count(arg_l, identifier_model,
+                                   is_index_list=False):
+    inner_vals,nargs = _arglist_inner_contentseq_and_count(
+        arg_l, identifier_model, add_comma_suffix = True,
+        add_index_suffix = is_index_list
+    )
+    val = [None] + inner_vals + [None]
 
     # replace the placeholders
     use_bracket = is_index_list and (nargs == 1)
@@ -683,9 +528,7 @@ def _handle_write_stmt(stmt, identifier_model):
                 var_name = elem.token.string
             else:
                 var_name = elem.array_name.token.string
-            arg_type = _get_cpp_type(
-                var_name, identifier_model.fortran_identifier_spec
-            ).type
+            arg_type = identifier_model.get_cpp_type(var_name)
 
         elif isinstance(elem, CastExpr):
             arg_type = _CastExpr_translations(elem, identifier_model,
@@ -801,6 +644,36 @@ def _translate_GoToStmt(stmt, idenfitier_model):
     )
     return t
 
+def _translate_alloc_dealloc_stmt(stmt, identifier_model):
+    print("memory managing")
+    kind = stmt.procedure_tok.type
+    assert kind in [BuiltinProcedure.deallocate, BuiltinProcedure.allocate]
+
+    assert more_itertools.ilen(stmt.arg_l.get_args()) == 1
+    managed_identifier = next(stmt.arg_l.get_args())
+
+    if kind == BuiltinProcedure.deallocate:
+        assert isinstance(managed_identifier, IdentifierExpr)
+        identifier_name = managed_identifier.token.string
+        line_itr = _translate_deallocate(identifier_name, identifier_model)
+    else:
+        assert isinstance(managed_identifier, ArrayAccess)
+        identifier_name = managed_identifier.array_name.token.string
+        translation_l, _ = _arglist_inner_contentseq_and_count(
+            managed_identifier.arg_l, identifier_model
+        )
+        translated_axlens = []
+        for elem in translation_l:
+            if isinstance(elem.ref, Token) and elem.ref.string == ',':
+                continue
+            translated_axlens.append(concat_translated_pairs(elem))
+        arr_init_spec = ArrInitSpec(identifier_name, translated_axlens)
+        line_itr = _translate_allocatable_init(
+            arr_init_spec, identifier_model, is_decl=False
+        )
+        #raise NotImplementedError()
+    return '\n'.join(line_itr), False
+
 def _translate_stmt(stmt, identifier_model):
     """
     Returns
@@ -898,6 +771,8 @@ def _translate_stmt(stmt, identifier_model):
                 stmt.arg_l, identifier_model, is_index_list=False
             )
             return (leading_part + list(trailing_part)), True
+        case BuiltinProcedureStmt():
+            return _translate_alloc_dealloc_stmt(stmt, identifier_model)
         case WriteStmt():
             return _handle_write_stmt(stmt, identifier_model)
         case Standard1TokenStmt():

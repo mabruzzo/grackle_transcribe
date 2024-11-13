@@ -1,12 +1,17 @@
 from itertools import cycle
 import textwrap
 
+from .cpp_identifier_model import (
+    IdentifierUsage, _IdentifierModel, _TYPE_MAP,
+    ArrInitSpec, get_translated_declaration_lines
+)
 from .identifiers import Constant
 from .parser import (
      IdentifierExpr, LiteralExpr, Standard1TokenStmt, Stmt, UncategorizedStmt,
      _iterate_tokens, ControlConstructKind, CallStmt,
      Parser, TokenStream
 )
+from .routine_analysis import analyze_routine
 from .src_model import (
     SrcItem,
     WhitespaceLines,
@@ -21,14 +26,10 @@ from .src_model import (
 )
 from .stringify import FormattedCodeEntryBuilder, concat_translated_pairs
 from .subroutine_entity import (
-    Declaration,
-    build_subroutine_entity,
-    ControlConstruct
+    Declaration, build_subroutine_entity, ControlConstruct
 )
 from .translator import (
-    _translate_stmt, _IdentifierModel, IdentifierUsage, _TYPE_MAP,
-    _get_translated_label,
-    _translate_expr
+    _translate_stmt, _get_translated_label, _translate_expr
 )
 from .token import Type, Keyword, Misc, token_has_type
 from .utils import index_non_space
@@ -197,94 +198,62 @@ class CppTranslator(EntryVisitor):
             return None
         elif isinstance(entry.src, PreprocessorDirective):
             raise RuntimeError()
-
-        def _handle_arr(identifier, is_arg):
-            arrspec = identifier.array_spec
-            ctype = _TYPE_MAP[identifier.type]
-            vec_type = f'std::vector<{ctype}>'
-            view_type = f'grackle::impl::View<{ctype}{"*"*arrspec.rank}>'
-
-            primary_name = identifier.name
-            if arrspec.rank == 1:
-                _data_name = primary_name
-            elif is_arg:
-                _data_name = f'{identifier.name}_data_ptr'
-            else:
-                _data_name = f'{identifier.name}_data_vec_'
-
-            if identifier.array_spec.allocatable:
-                assert not is_arg
-                out = [f'{vec_type} {_data_name};']
-                if arrspec.rank > 1:
-                    out.append(f'{view_type} {primary_name};')
-                return out
-
-            axlens = []
-            for elem in arrspec.axlens:
-                if isinstance(elem, LiteralExpr):
-                    axlens.append(elem.token.string)
-                elif isinstance(elem, IdentifierExpr):
-                    axlens.append(
-                        self._cpp_variable_name(elem, IdentifierUsage.ScalarValue)
-                    )
-                else:
-                    raise RuntimeError("not equipped to handle this case yet")
-
-            assert len(axlens) == arrspec.rank
-            vec_size = '*'.join(axlens)
-
-            out = [] if is_arg else [f'{vec_type} {_data_name}({vec_size});']
-
-            if arrspec.rank == 1:
-                assert not is_arg
-            else:
-                ptr = _data_name if is_arg else f'{_data_name}.data()'
-                out.append(
-                    f'{view_type} {primary_name}({ptr}, ' +
-                    ','.join(axlens) +
-                    ');'
-                )
-            return out
-
-        
-        scalar_decls = []
-        array_decl_lines = []
-        for identifier in entry.identifiers:
-            if isinstance(identifier, Constant):
-                translated_line = _get_constant_decl_init(
-                    decl=entry,
-                    line=entry.src,
-                    identifier_model=self.identifier_model
-                )
-                self._write_translated_line(translated_line)
-                return None
-            elif identifier_spec.is_arg(identifier.name):
-                if identifier.array_spec is None:
-                    continue
-                elif identifier.array_spec.rank == 1:
-                    continue
-                else:
-                    array_decl_lines += _handle_arr(identifier, True)
-            elif identifier.array_spec is None:
-                scalar_decls.append(identifier)
-            else:
-                array_decl_lines += _handle_arr(identifier, False)
-
-        if (scalar_decls == [] and array_decl_lines == []):
-            self._write_translated_line(
-                '// -- removed line (previously just declared arg types) -- '
+        elif (
+            (len(entry.identifiers) == 1) and
+            isinstance(entry.identifiers[0], Constant)
+        ):
+            translated_line = _get_constant_decl_init(
+                decl=entry,
+                line=entry.src,
+                identifier_model=self.identifier_model
             )
+            self._write_translated_line(translated_line)
             return None
 
 
-        ctype = _TYPE_MAP[entry.identifiers[0].type]
-        if len(scalar_decls) > 0:
-            self._write_translated_line(
-                f"{ctype} {', '.join(v.name for v in scalar_decls)};"
-            )
+        def _handle_arr(identifier, is_arg):
+            arrspec = identifier.array_spec
+            if arrspec.allocatable: assert not is_arg
 
-        for line in array_decl_lines:
-            self._write_translated_line(line)
+            axlens = []
+            for elem in arrspec.axlens:
+                if arrspec.allocatable:
+                    axlens.append(None)
+                elif isinstance(elem, LiteralExpr):
+                    axlens.append(elem.token.string)
+                elif isinstance(elem, IdentifierExpr):
+                    axlens.append(self._cpp_variable_name(
+                        elem, IdentifierUsage.ScalarValue
+                    ))
+                else:
+                    raise RuntimeError("not equipped to handle this case yet")
+            return ArrInitSpec(identifier.name,tuple(axlens))
+
+        scalar_decls = []
+        declared_arrinitspec_l = []
+        for identifier in entry.identifiers:
+            rank = getattr(getattr(identifier,'array_spec',None), 'rank', None)
+            is_arg = identifier_spec.is_arg(identifier.name)
+            if (rank is not None) and rank > 1:
+                declared_arrinitspec_l.append(_handle_arr(identifier, is_arg))
+            elif is_arg:
+                continue
+            else:
+                scalar_decls.append(identifier.name)
+
+        if (scalar_decls == [] and declared_arrinitspec_l == []):
+            self._write_translated_line(
+                '// -- removed line (previously just declared arg types) -- '
+            )
+        else:
+            itr = get_translated_declaration_lines(
+                entry.identifiers[0].type,
+                scalar_decls,
+                declared_arrinitspec_l,
+                self.identifier_model
+            )
+            for line in itr:
+                self._write_translated_line(line)
         return None
 
     def _visit_Stmt(self, entry):
@@ -423,6 +392,7 @@ def transcribe(in_fname, out_f):
                 continue
             subroutine = build_subroutine_entity(region, it.prologue)
 
+            props = analyze_routine(subroutine)
 
             translator = CppTranslator(
                 writer, identifier_spec = subroutine.identifiers

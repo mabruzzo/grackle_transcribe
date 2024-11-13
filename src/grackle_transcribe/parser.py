@@ -345,7 +345,6 @@ class DoIndexList:
             assert isinstance(self.increment_expr, Expr)
 
     def iter_contents(self):
-        yield self.do_tok
         yield self.init_stmt
         yield self.comma1_tok
         yield self.limit_expr
@@ -466,6 +465,18 @@ class WriteStmt(Stmt):
         if self.clist_arg1.string == '*': return None
         return self.clist_arg1
 
+    def iter_contents(self):
+        yield self.write_tok
+        yield self.clist_left
+        yield self.clist_arg0
+        yield self.clist_comma
+        yield self.clist_arg1
+        yield self.clist_right
+        if isinstance(self.output_list, ImpliedDoList):
+            yield self.output_list
+        else:
+            for elem in self.output_list:
+                yield elem
 
 
 def is_itr_exhausted(itr):
@@ -983,8 +994,9 @@ def iter_contents(obj):
         yield from _default_itr_contents(obj, skipped_first_item_type=Code)
     elif isinstance(obj, Expr):
         yield from _default_itr_contents(obj)
+    #elif isinstance
     else:
-        raise TypeError()
+        raise TypeError(f'{obj} has unexpected type {obj.__class__.__name__}')
 
 def iterate_true_contents(arg, predicate):
     # basically we yield all conents where predicate(elem) returns True
