@@ -743,13 +743,18 @@ class Parser:
             # -> in the future, we will eliminate this try-except and handle
             #    this far more gracefully
             if out is None:
-                try:
-                    out = self.try_parse_assignment_stmt(token_stream)
-                except RuntimeError:
-                    out = None
+                out = self.try_parse_assignment_stmt(token_stream)
+
+                #try:
+                #    out = self.try_parse_assignment_stmt(token_stream)
+                #except RuntimeError:
+                #    out = None
 
         if out is None: # in the future, this branch will become an error
-            raise RuntimeError("Don't know how to parse statement")
+            problematic_lines = '\n'.join(token_stream.src.lines)
+            raise RuntimeError(
+                f"Don't know how to parse statement\n  {problematic_lines}"
+            )
         elif ((not is_itr_exhausted(token_stream)) and
               (not sub_statement) and
               (not isinstance(out, UncategorizedStmt))):

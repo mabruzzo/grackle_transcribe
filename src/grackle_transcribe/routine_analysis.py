@@ -55,7 +55,8 @@ class VariableInspectionVisitor(EntryVisitor):
         super().__init__(ignore_unknown=False)
         self.fortran_identifier_spec = fortran_identifier_spec
         self.info_map = {
-            name: VariableInfo() for name in fortran_identifier_spec.keys()
+            name.lower(): VariableInfo()
+            for name in fortran_identifier_spec.keys()
         }
 
     def visit_WhitespaceLines(self, entry): pass
@@ -67,13 +68,13 @@ class VariableInspectionVisitor(EntryVisitor):
     def visit_Stmt(self, entry):
         if isinstance(entry, CallStmt):
             for var_name in _iterate_var_names(entry.arg_l):
-                self.info_map[var_name].passed_to_subroutine = True
+                self.info_map[var_name.lower()].passed_to_subroutine = True
             # based on the position in the arg list and knowledge about the
             # subroutine, we could surmise whether the variable is mutated by
             # the subroutine
         else:
             for var_name in _iterate_var_names(entry):
-                self.info_map[var_name].locally_used = True
+                self.info_map[var_name.lower()].locally_used = True
 
             # todo: modify self.info_map[var_name].locally_mutated based on
             # the following

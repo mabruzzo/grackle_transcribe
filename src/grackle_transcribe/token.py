@@ -9,6 +9,7 @@ from .utils import index_non_space
 from enum import Enum, auto
 from functools import partial
 import itertools
+import pprint
 import re
 from typing import Any, Callable, List, NamedTuple, Optional, Tuple, Union
 
@@ -192,6 +193,7 @@ class BuiltinFn(_TokenEnum):
     log   = (auto(), [r"log"])
     log10 = (auto(), [r"log10"])
     max   = (auto(), [r'max'])
+    maxval = (auto(), [r'maxval'])
     min   = (auto(), [r'min'])
     mod   = (auto(), [r"mod"])
     int   = (auto(), [r"int"])
@@ -635,11 +637,21 @@ def _replace_internal_token_types(token_l, has_label = False):
             'arbitrary-name', Literal.real, Literal.integer, ')'
         ):
             choice = binary_op
-        elif prev_tok.string in (')', '=', ','):
+        elif prev_tok.string in ('(', '=', ','):
             choice = unary_op
         else:
-            print(compressed_concat_tokens(token_l))
-            raise ValueError("Encountered an unexpected scenario")
+            prior_tokens = f'\n  '.join(
+                pprint.pformat(token_l[min(i-3, 0):i]).splitlines()
+            )
+            raise ValueError(
+                "Encountered an unexpected scenario\n"
+                "-> compressed-token-string:\n"
+                f"  {compressed_concat_tokens(token_l)}\n"
+                "-> preceeding tokens:\n"
+                f"  {prior_tokens}\n"
+                "-> current token:\n"
+                f"  {token}\n"
+                )
 
         token_l[i] = token._replace(type = choice)
 

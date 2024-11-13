@@ -1,3 +1,5 @@
+import more_itertools
+
 from itertools import cycle
 import textwrap
 
@@ -39,19 +41,67 @@ from .writer import (
     _passthrough_SrcItem
 )
 
+def _arglines(arg_list, indent = '  '):
+
+    # we can't use textwrap because we want to ensure that the type
+    # declaration and argname are on the same line
+    width = 80
+    delim = ','
+    indent_size, delim_size = len(indent), len(delim)
+
+    cur_buf, cur_buf_size = [], 0
+    itr = more_itertools.peekable(arg_list)
+    for arg in itr:
+        arg_len = len(arg)
+        nominal_size = 1 + arg_len + delim_size
+        if (len(cur_buf) != 0) and ((cur_buf_size + nominal_size) > width):
+            yield ''.join(cur_buf)
+            cur_buf, cur_buf_size = [], 0
+
+        if len(cur_buf) == 0:
+            cur_buf.append(indent)
+            cur_buf_size += indent_size
+            latest_chunk, latest_len = [arg], arg_len
+        else:
+            latest_chunk, latest_len = [' ', arg], 1 + arg_len
+
+        if bool(itr): # not exhausted
+            latest_chunk.append(delim)
+            latest_len += delim_size
+        cur_buf += latest_chunk
+        cur_buf_size += latest_len
+    if len(cur_buf) > 0:
+        yield ''.join(cur_buf)
 
 
+def c_like_fn_signature(subroutine, identifier_model = None,
+                        wrapped_by_fortran_name = False):
+    if identifier_model is None:
+        def _get_argname(arg):
+            modify = (arg.array_spec is not None) and (arg.array_spec.rank > 1)
+            return f"{arg.name}_data_ptr" if modify else arg.name
+    else:
+        def _get_argname(arg):
+            return identifier_model.cpp_arglist_identifier(arg.name)
 
-
-def c_like_fn_signature(subroutine):
     arg_list = []
     for arg in subroutine.arguments:
-        if (arg.array_spec is not None) and (arg.array_spec.rank > 1):
-            arg_name = f"{arg.name}_data_ptr"
-        else:
-            arg_name = arg.name
-        arg_list.append(f"  {_TYPE_MAP[arg.type]}* {arg_name}")
-    rslt = f"void {subroutine.name}(\n" + ',\n'.join(arg_list) + '\n)'
+        arg_name = _get_argname(arg)
+        arg_list.append(f"{_TYPE_MAP[arg.type]}* {arg_name}")
+
+
+    indent = '  '
+    if False:
+        arg_list_str = indent + f',\n {indent}'.join(arg_list)
+    else:
+        arg_list_str = '\n'.join(_arglines(arg_list, indent = indent))
+
+    if wrapped_by_fortran_name:
+        routine_name = f'FORTRAN_NAME({subroutine.name})'
+    else:
+        routine_name = subroutine.name
+
+    rslt = '\n'.join([f"void {routine_name}(", arg_list_str, ')'])
     return rslt
 
 
@@ -96,13 +146,13 @@ _TODO_PREFIX = '//_//'
 
 class CppTranslator(EntryVisitor):
 
-    def __init__(self, consume_callback, identifier_spec):
+    def __init__(self, consume_callback, identifier_model):
         super().__init__(ignore_unknown=False)
         self.consumer = _Consumer(consume_callback)
         def unaddressed_consume(arg):
             consume_callback(f"  {_TODO_PREFIX} PORT: {arg}")
         self.unaddressed_consumer = _Consumer(unaddressed_consume)
-        self.identifier_model = _IdentifierModel(identifier_spec)
+        self.identifier_model = identifier_model
         self.block_level=1
 
     def _write_translated_line(self, line):
@@ -371,35 +421,91 @@ class CppTranslator(EntryVisitor):
         else:
             self.dispatch_visit(entry.end)
 
+def _write_declaration_header(fname, signature, use_C_linkage):
+    # writes out a header file whose sole purpose is to provide a declaration
+    # that can be included in C files
+    with open(fname, 'w') as f:
+        f.write("""\
+#include "grackle.h"             // gr_float
+#include "fortran_func_decls.h"  // gr_mask_int
 
-def transcribe(in_fname, out_f):
+""")
+        if use_C_linkage:
+            f.write("""\
+#ifdef __cplusplus
+extern "C" {
+#endif /* __cplusplus */
 
-    temp_fname = './__my_dummy_file'
+""")
+        f.write(signature)
+        f.write(';\n')
+        if use_C_linkage:
+            f.write("""\
+#ifdef __cplusplus
+}  // extern "C"
+#endif /* __cplusplus */
+""")
+
+def transcribe(in_fname, out_f, prolog = None, epilog = None,
+               extern_header_fname = None, use_C_linkage = True):
+    """
+    This does the heavy lifting of transcribing the first routine in
+    ``in_fname`` and writing it to ``out_f``.
+
+    If extern_header_fname is provided, we will also write a header file that
+    can be used to declare this functionality.
+    """
+
     with open(in_fname, "r") as in_f:
         provider = LineProvider(in_f, fname = in_fname)
         it = get_source_regions(provider)
+
+        if prolog is not None:
+            out_f.write(prolog)
 
         # handle outputs
         def writer(arg):
             out_f.write(f'{arg}\n')
 
-        writer("//_// TODO: ADD INCLUDE DIRECTIVES")
+        out_f.write("""\
+#include <cstdio>
+#include <vector>
+
+#include "grackle.h"
+#include "fortran_func_decls.h"
+#include "utils.hpp"
+""")
+        if extern_header_fname is not None:
+            writer(f'#include "{extern_header_fname}"')
+
+        writer("")
+        writer("//_// TODO: ADD ANY OTHER INCLUDE DIRECTIVES")
         writer("")
 
+        if use_C_linkage:
+            writer('extern "C" {')
 
         for region in it:
             if not region.is_routine:
                 continue
             subroutine = build_subroutine_entity(region, it.prologue)
 
+            # todo: in the future, pass props into _IdentifierModel constructor
             props = analyze_routine(subroutine)
+            identifier_model = _IdentifierModel(subroutine.identifiers)
 
             translator = CppTranslator(
-                writer, identifier_spec = subroutine.identifiers
+                writer, identifier_model = identifier_model
             )
 
-            #translator.dispatch_visit(subroutine.subroutine_stmt)
-            writer(c_like_fn_signature(subroutine))
+            signature = c_like_fn_signature(subroutine, identifier_model)
+            if extern_header_fname is not None:
+                _write_declaration_header(
+                    extern_header_fname, signature, use_C_linkage
+                )
+
+
+            writer(signature)
             writer("{")
 
             for entry in subroutine.declaration_section:
@@ -410,7 +516,15 @@ def transcribe(in_fname, out_f):
 
 
             writer("}")
-            return
+            break
+        if use_C_linkage:
+            writer("")
+            writer('}  // extern "C"')
+
+        if epilog is not None:
+            writer("")
+            out_f.write(epilog)
+        return
 
 
 

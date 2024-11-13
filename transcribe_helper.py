@@ -65,6 +65,10 @@ if __name__ == '__main__':
                 #print(c_like_fn_signature(subroutine),'\n')
                 #print(f" -- {subroutine.name}")
                 with open("my-result.C", "w") as out_f:
-                    transcribe(in_fname, out_f)
+                    transcribe(
+                        in_fname, out_f,
+                        extern_header_fname = "my-result-decl.h",
+                        use_C_linkage=True
+                    )
 
                 sys.exit(0)

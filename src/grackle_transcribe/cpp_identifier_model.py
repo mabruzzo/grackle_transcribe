@@ -160,7 +160,7 @@ def _build_identifier_map(fortran_identifier_spec, identifier_analysis_map):
     cpp_identifier_pairs = []
 
     fortran_arg_names = [
-        arg.name for arg in fortran_identifier_spec.arguments
+        arg.name.lower() for arg in fortran_identifier_spec.arguments
     ]
     cpp_arg_names = [None for elem in fortran_arg_names]
 
@@ -169,7 +169,7 @@ def _build_identifier_map(fortran_identifier_spec, identifier_analysis_map):
     for name in fortran_identifier_spec.keys():
         fortran_var = fortran_identifier_spec[name]
         try:
-            arg_index = fortran_arg_names.index(name)
+            arg_index = fortran_arg_names.index(name.lower())
         except ValueError:
             arg_index = None
         is_arg = (arg_index is not None)
@@ -232,10 +232,10 @@ class _IdentifierModel:
         self.cpp_identifiers = cpp_identifiers
 
     def _cpp_key(self, fortran_name):
-        return self.fortran_to_cpp_key[fortran_name]
+        return self.fortran_to_cpp_key[fortran_name.lower()]
 
     def _cpp_identifier_from_fortran_name(self, fortran_name):
-        key = self.fortran_to_cpp_key[fortran_name]
+        key = self.fortran_to_cpp_key[fortran_name.lower()]
         return self.cpp_identifiers[key]
 
     def fortran_identifier_props(self, name):
@@ -244,6 +244,14 @@ class _IdentifierModel:
     def get_cpp_type(self, name):
         tmp = self._cpp_identifier_from_fortran_name(name)
         return tmp.type.type
+
+    def cpp_arglist_identifier(self, fortran_name):
+        primary_idinfo = self._cpp_identifier_from_fortran_name(fortran_name)
+        if primary_idinfo.wrapped_key is None:
+            return primary_idinfo.string
+        else:
+            wrapped_idinfo = self.cpp_identifiers[primary_idinfo.wrapped_key]
+            return wrapped_idinfo.string
 
     def cpp_variable_name(
         self, identifier, identifier_usage, arr_ndim = None,
@@ -431,7 +439,7 @@ def get_translated_declaration_lines(common_type,
             modifier = idinfo.type.modifier
             assert modifier.array_rank == len(initspec.translated_axlens)
             if modifier.is_vector():
-                constructor_args = [initspec._joined_axlens(delim=' * ')]
+                constructor_args = initspec._joined_axlens(delim=' * ')
             elif modifier.is_view():
                 assert isinstance(idinfo.wrapped_key, str)
                 constructor_arg = identifier_model.cpp_variable_name(
@@ -445,6 +453,6 @@ def get_translated_declaration_lines(common_type,
                     initspec._joined_axlens(delim=comma_delim)
                 )
             else:
-                raise RuntimeError()
+                raise RuntimeError(modifier)
             typestr = idinfo.type.cpp_type_str()
             yield f'{typestr} {idinfo.string}({constructor_args});'

@@ -36,9 +36,9 @@ class IdentifierSpec:
 
     def __init__(self, arguments, variables, constants):
         self._identifiers = dict(
-            [(elem.name, (elem, True)) for elem in arguments] +
-            [(elem.name, (elem, False)) for elem in variables] +
-            [(elem.name, (elem, False)) for elem in constants]
+            [(elem.name.lower(), (elem, True)) for elem in arguments] +
+            [(elem.name.lower(), (elem, False)) for elem in variables] +
+            [(elem.name.lower(), (elem, False)) for elem in constants]
         )
         self._n_args = len(arguments)
         self._first_const = self._n_args + len(variables)
@@ -47,7 +47,7 @@ class IdentifierSpec:
 
     def _is_kind(self, key, kind):
         try:
-            val, is_arg = self._identifiers[key]
+            val, is_arg = self._identifiers[key.lower()]
         except KeyError:
             return False
         if kind == "arg":
@@ -62,8 +62,8 @@ class IdentifierSpec:
     def is_var(self, key): return self._is_kind(key, 'var')
     def is_constant(self, key): return self._is_kind(key, 'constant')
     def __len__(self): return len(self._identifiers)
-    def __getitem__(self, key): return self._identifiers[key][0]
-    def __contains__(self, key): return key in self._identifiers
+    def __getitem__(self, key): return self._identifiers[key.lower()][0]
+    def __contains__(self, key): return key.lower() in self._identifiers
     def keys(self): return self._identifiers.keys()
 
     @property
@@ -92,6 +92,9 @@ class IdentifierSpec:
         try:
             tmp = self[identifier_name]
         except KeyError:
+            # this is a bit of a hack right now (we probably need to implement
+            # case-insensitivity a little more consistently thoughout this
+            # function)
             raise RuntimeError(
                 f"{identifier_name} is not a known identifier. "
                 "is it actually the name of a builtin function?"

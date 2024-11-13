@@ -645,7 +645,6 @@ def _translate_GoToStmt(stmt, idenfitier_model):
     return t
 
 def _translate_alloc_dealloc_stmt(stmt, identifier_model):
-    print("memory managing")
     kind = stmt.procedure_tok.type
     assert kind in [BuiltinProcedure.deallocate, BuiltinProcedure.allocate]
 
