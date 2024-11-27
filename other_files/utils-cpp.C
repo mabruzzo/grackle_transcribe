@@ -8,7 +8,7 @@
 int eprintf(const char* format, ...) {
   std::va_list args;
   va_start(args, format);
-  int out = vfprintf(format, args);
+  int out = vfprintf(stderr, format, args);
   va_end(args);
   return out;
 }

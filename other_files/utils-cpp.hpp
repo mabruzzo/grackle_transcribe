@@ -217,8 +217,7 @@ namespace grackle::impl {
 
 /// crude implementation of some logic for printing some arrays
 template <typename T>
-void grackle::impl::print_array(const char* entry_fmt, const T* ptr,
-                                int start, int stop)
+void print_array(const char* entry_fmt, const T* ptr, int start, int stop)
 {
   GRIMPL_ERROR("NOT IMPLEMENTED YET!");
 }
