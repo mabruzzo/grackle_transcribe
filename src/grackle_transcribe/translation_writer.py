@@ -494,7 +494,7 @@ def transcribe(in_fname, out_f, prolog = None, epilog = None,
             props = analyze_routine(subroutine)
             identifier_model = _IdentifierModel(
                 subroutine.identifiers,
-                #identifier_analysis_map=props
+                identifier_analysis_map=props
             )
 
             translator = CppTranslator(

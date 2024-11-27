@@ -382,7 +382,7 @@ def _translate_deallocate(fortran_name, identifier_model):
         if idinfo.type.modifier.is_view():
             suffix = f' = {idinfo.type.cpp_type_str()}();'
         else:
-            suffix = '.clear()'
+            suffix = '.clear();'
         yield idinfo.string + suffix
 
 def _translate_allocatable_init(arr_init_spec, identifier_model, is_decl):
@@ -404,7 +404,7 @@ def _translate_allocatable_init(arr_init_spec, identifier_model, is_decl):
         if len(idinfo_l) != 1:
             comma_delim = ', '
             constructor_args = (
-                f'{idinfo_l[0].string}{comma_delim}' +
+                f'{idinfo_l[0].string}.data(){comma_delim}' +
                 arr_init_spec._joined_axlens(delim=comma_delim)
             )
             typestr = idinfo_l[1].type.cpp_type_str()

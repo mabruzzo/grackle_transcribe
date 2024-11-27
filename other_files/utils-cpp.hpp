@@ -15,6 +15,28 @@
 // ---------------------------------------------
 // first, we define some generally useful macros
 // ---------------------------------------------
+/// @def OMP_PRAGMA
+/// Macro used to wrap OpenMP's pragma directives.
+///
+/// When the program:
+///  * is compiled with OpenMP, the pragma contents are honored.
+///  * is NOT compiled with OpenMP, the pragma contents are ignored.
+///
+/// @note
+/// This macro is implemented using the ``_Pragma`` operator, described
+/// [here](https://en.cppreference.com/w/cpp/preprocessor/impl). More details
+/// can be found [here](https://gcc.gnu.org/onlinedocs/cpp/Pragmas.html).
+#ifdef _OPENMP
+#define OMP_PRAGMA(x) _Pragma(#x)
+#else
+#define OMP_PRAGMA(x) /* ... */
+#endif
+
+#ifdef _OPENMP
+#define OMP_PRAGMA_CRITICAL _Pragma("omp critical")
+#else
+#define OMP_PRAGMA_CRITICAL /* ... */
+#endif
 
 /// @macro GRIMPL_FORCE_INLINE
 /// @brief replacement for ``inline`` that forces inlining (on some compilers)
