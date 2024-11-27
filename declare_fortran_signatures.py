@@ -24,6 +24,14 @@ extern "C" {
 #include <stdint.h>         // int32_t
 typedef int32_t gr_mask_type;
 
+#define MASK_TRUE 1
+#define MASK_FALSE 0
+
+// the following 2 declarations should be removed in the near future
+// (they are simply a short-term stop-gap until I get the desired
+// capitalization during translation)
+#define mask_true 1
+#define mask_false 0
 """
 
 _EPILOG = """\
@@ -80,6 +88,7 @@ void FORTRAN_NAME(gaussj_g)(
 
 def declarations_iter(fnames):
     for fname in fnames:
+        print(fname)
         with open(os.path.join(PREFIX, fname), 'r') as f:
             provider = LineProvider(f)
             it = get_source_regions(provider)
