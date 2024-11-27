@@ -123,30 +123,31 @@ def _prep_cpp_indentifiers(
         else:
             pr_modifier, dummy = _MODIFIER_MAP[rank, is_arg]
             assert dummy is None # sanity check!
-        wr_name = None
+        wrapped_key = None
         wrapped_pair = None
 
     else:
         pr_modifier, wr_modifier = _MODIFIER_MAP[rank, is_arg]
         if getattr(var_info, 'locally_used', True):
             wr_name = f'{name}_data_'
+            wrapped_key = wr_name.lower()
             wr_t = _CppType(fortran_identifier.type, wr_modifier)
             wrapped_pair = (
-                wr_name,
+                wrapped_key,
                 CppIdentifierInfo(
                     string=wr_name, type=wr_t, wrapped_key=None
                 )
             )
         else:
             pr_modifier = wr_modifier
-            wr_name = None
+            wrapped_key = None
             wrapped_pair = None
 
     pr_name = name
     pr_t = _CppType(fortran_identifier.type, pr_modifier)
     primary_pair = (
         pr_name,
-        CppIdentifierInfo(string=pr_name, type=pr_t, wrapped_key=wr_name)
+        CppIdentifierInfo(string=pr_name, type=pr_t, wrapped_key=wrapped_key)
     )
 
     assert rank == primary_pair[1].type.modifier.array_rank, "sanity check"
@@ -167,6 +168,8 @@ def _build_identifier_map(fortran_identifier_spec, identifier_analysis_map):
     identifier_analysis_map_accesses = 0
 
     for name in fortran_identifier_spec.keys():
+        # name is all lowercase, (that is the key), but fortran_var.name has
+        # proper capitalization
         fortran_var = fortran_identifier_spec[name]
         try:
             arg_index = fortran_arg_names.index(name.lower())
@@ -180,7 +183,10 @@ def _build_identifier_map(fortran_identifier_spec, identifier_analysis_map):
         except KeyError:
             var_info = None
         primary_pair, wrapped_pair = _prep_cpp_indentifiers(
-            name=name, is_arg=is_arg, fortran_identifier=fortran_var,
+            # use fortran_var.name for proper capitalization
+            name=fortran_var.name,
+            is_arg=is_arg,
+            fortran_identifier=fortran_var,
             var_info=var_info
         )
 
@@ -191,9 +197,9 @@ def _build_identifier_map(fortran_identifier_spec, identifier_analysis_map):
 
         if is_arg:
             if wrapped_pair is not None:
-                arg_name = wrapped_pair[0]
+                arg_name = wrapped_pair[1].string # get proper capitalization
             else:
-                arg_name = primary_pair[0]
+                arg_name = primary_pair[1].string # get proper capitalization
             cpp_arg_names[arg_index] = arg_name
 
     assert len(identifier_analysis_map) == identifier_analysis_map_accesses
