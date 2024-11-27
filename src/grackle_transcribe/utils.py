@@ -25,7 +25,7 @@ def _valid_fortran_fname(fname):
     # this probably shouldn't be hardcoded, but we need it in multiple places
     return fname.endswith('.F') and fname not in _bad_fnames
 
-def add_gracklesrcdir_arg(parser):
+def add_gracklesrcdir_arg(parser, required = False):
     if hasattr(parser, "addoption"): #pytest parser
         adder = parser.addoption
     else: #argparse parser
@@ -34,6 +34,7 @@ def add_gracklesrcdir_arg(parser):
     adder(
         "--grackle-src-dir",
         action="store",
+        required=required,
         help=(
             "Specifies the path to the src/clib subdirectory of the grackle "
             "repository.",
