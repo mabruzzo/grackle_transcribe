@@ -52,6 +52,31 @@ You can run it from the root of the repository with:
 pytest --grackle-src-dir=/path/to/grackle/src/clib
 ```
 
+## How it works
+
+You need to generate a header with C-declarations for all fortran headers. From the root of this repository, invoke:
+
+```sh
+python declare_fortran_signatures.py --grackle-src-dir=/path/to/grackle/src/clib
+```
+
+Then you can use the ``transcribe.py`` script to generate a source and header file for the first function in a given file. An invocation might look like:
+
+```sh
+python transcribe.py --grackle-src-dir=/path/to/grackle/src/clib --fname=solve_rate_cool_g.F
+```
+
+OR
+
+```sh
+python transcribe.py --grackle-src-dir=/path/to/grackle/src/clib --fname=cool_multi_time_g.F
+```
+
+> [!NOTE]  
+> I have confirmed that both invocations produce C++ code that succesfully compiles with C++ 17. However, I have not checked correctness, yet.
+
+These generated files assume that the the source files ``other_files/utils-cpp.C`` and ``utils-cpp.hpp`` will also be included in the same build process.
+
 
 [^1]: This code was originally written just to be used myself. I hadn't really intended to share it with anybody else. Additionally, development involved a lot of experimentation. Furthermore, the scope of the project creeped a lot (the original intention was to write some tools to help with transcribing chunks of code).
 
