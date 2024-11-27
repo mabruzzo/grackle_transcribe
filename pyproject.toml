@@ -5,4 +5,6 @@ build-backend = "hatchling.build"
 [project]
 name = "grackle_transcribe"
 version = "0.1.0"
+requires-python = ">= 3.10" # we make use of the match syntax
+dependencies = ["more-itertools"]
 
