@@ -3,7 +3,7 @@
 #include <cstdlib>
 #include <vector>
 
-#include "utils.hpp"
+#include "utils-cpp.hpp"
 
 int eprintf(const char* format, ...) {
   std::va_list args;

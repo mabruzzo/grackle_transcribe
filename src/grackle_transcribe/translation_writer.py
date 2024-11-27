@@ -473,7 +473,7 @@ def transcribe(in_fname, out_f, prolog = None, epilog = None,
 
 #include "grackle.h"
 #include "fortran_func_decls.h"
-#include "utils.hpp"
+#include "utils-cpp.hpp"
 """)
         if extern_header_fname is not None:
             writer(f'#include "{extern_header_fname}"')
@@ -492,7 +492,10 @@ def transcribe(in_fname, out_f, prolog = None, epilog = None,
 
             # todo: in the future, pass props into _IdentifierModel constructor
             props = analyze_routine(subroutine)
-            identifier_model = _IdentifierModel(subroutine.identifiers)
+            identifier_model = _IdentifierModel(
+                subroutine.identifiers,
+                #identifier_analysis_map=props
+            )
 
             translator = CppTranslator(
                 writer, identifier_model = identifier_model
