@@ -1,8 +1,4 @@
-# this encodes logic for parsing a single chunk of fortran code
-
-#class Matcher(Enum):
-#    UNDEFINED = auto()
-#
+# this file encodes logic for parsing a single chunk of fortran code into tokens
 
 from .utils import index_non_space
 
@@ -12,12 +8,6 @@ import itertools
 import pprint
 import re
 from typing import Any, Callable, List, NamedTuple, Optional, Tuple, Union
-
-def _attr_check(token, attr, matcher):
-    attr_val = getattr(token, attr)
-    if not isinstance(attr_val, str):
-        return False
-    return matcher.match(attr_val) is not None
 
 def token_has_type(tok, type_spec):
     if isinstance(type_spec, type):
@@ -29,122 +19,6 @@ def token_has_type(tok, type_spec):
             return False
         return type_spec.match(tok.type) is not None
     return tok.type == type_spec
-
-class _ClassifyReq:
-    # we only use regex for case insensitivity (we could get around this by
-    # creating more types of tokens, but I think this is the simpler way to
-    # do it)
-    leading_tok_l: list[Callable]
-    final_tok_str: Optional[re.Pattern] = None
-    max_len: Optional[int]
-    min_len: Optional[int]
-
-    def __init__(
-        self,
-        leading_tok_l: list[Union[str, Tuple[Any,str]]],
-        final_tok_str: Optional[str]= None,
-        max_len: int = None,
-        min_len: int = None
-    ):
-        assert len(leading_tok_l) > 0
-        self.leading_tok_l = []
-
-        for elem in leading_tok_l:
-
-            if isinstance(elem, tuple):
-                attr, expected = elem
-            else:
-                attr, expected = "string", elem
-
-            if not isinstance(expected, str):
-                assert attr == 'type'
-                checker = partial(token_has_type, type_spec=expected)
-            else:
-                flags = re.IGNORECASE if attr == "string" else 0
-
-                if expected[0] != '^':
-                    expected = '^' + expected
-                if expected[-1] != '$':
-                    expected = expected +'$'
-                matcher = re.compile(expected, flags)
-                if attr == 'type':
-                    checker = partial(token_has_type, type_spec=matcher)
-                else:
-                    checker = partial(_attr_check, attr=attr, matcher=matcher)
-
-            self.leading_tok_l.append(checker)
-
-        if final_tok_str is None:
-            self.final_tok_pattern = None
-        else:
-            self.final_tok_pattern = re.compile(final_tok_str, re.IGNORECASE)
-
-        self.max_len = max_len
-        self.min_len = min_len
-
-
-    def tok_matches(self, tok_l):
-        if len(self.leading_tok_l) > len(tok_l):
-            return False
-        for i, checker in enumerate(self.leading_tok_l):
-            if not checker(tok_l[i]):
-                return False
-
-        if ((self.final_tok_pattern is not None) and
-            (self.final_tok_pattern.match(tok_l[-1].string) is None)):
-            #print("final token doesn't match!")
-            return False
-        elif ((self.max_len is not None) and
-              (len(tok_l) > self.max_len)):
-            #print("max length doesn't match!")
-            return False
-        elif ((self.min_len is not None) and
-              (len(tok_l) < self.min_len)):
-            #print("min length doesn't match!")
-            return False
-
-        return True
-
-# the idea is to broadly characterize the chunk kind based on the first
-# token(s) in a chunk and optionally the last token in a chunk
-# -> this is very much heuristic based. We are not being rigorous.
-# -> I think we can get away with this since Grackle doesn't use sophisticated
-#    Fortran logic (other codes probably can't do this)
-# -> Importantly, reconcilliation with `flang-new`'s AST will serve as a nice
-#    sanity check!
-class ChunkKind(Enum):
-    Uncategorized = auto()
-    SubroutineDecl = auto()
-    EndRoutine = auto()
-    ImplicitNone = auto()
-    TypeSpec = auto()
-    Parameter = auto()
-
-    # apparently, Continue doesn't actually do anything
-    # - it primarily exists to act as a dummy statement that can be labelled
-    Continue = auto()
-
-    GoTo = auto()
-    Return = auto()
-    Call = auto()
-
-    # the write & format commands have some weird syntax!
-    Write = auto()
-    Format = auto()
-
-    IfConstructStart = auto()
-    IfSingleLine = auto()
-    ElseIf = auto()
-    Else = auto()
-    EndIf = auto()
-
-    DoWhileConstructStart = auto()
-    DoConstructStart = auto()
-    EndDo = auto()
-
-# uncategorized will correspond to assignments and built-in procedures (like alloc, format, write)
-
-
 
 class _NullMatcher:
     def match(self, *args, **kwargs): return None
@@ -315,71 +189,8 @@ class Internal(_TokenEnum):
     Minus = (auto(), [r"\-"])
     Plus = (auto(), [r"\+"])
 
-_reqs = {
-    ChunkKind.SubroutineDecl : _ClassifyReq(
-        [("type", Keyword.SUBROUTINE),
-         ("type","arbitrary-name"),
-         ("type", r"\(")]
-    ),
-    ChunkKind.EndRoutine : None, # it will be a full token match
-
-    # declaration related chunks
-    ChunkKind.ImplicitNone : None, # it will be a full token match
-    ChunkKind.TypeSpec : _ClassifyReq([("type", Type)]),
-    ChunkKind.Parameter : _ClassifyReq(
-        ["parameter", ("type", r"\("), ("type", "arbitrary-name")],
-    ),
-
-    # miscellaneous routine-body
-    ChunkKind.Continue: None, # it will be a full token match
-    ChunkKind.GoTo: _ClassifyReq([("type", Keyword.GOTO)], min_len = 2),
-    ChunkKind.Return: _ClassifyReq(["return"]),
-    ChunkKind.Call: _ClassifyReq(
-        ["call", ("type", "arbitrary-name"), ("type", r"\(")],
-    ),
-
-    ChunkKind.Write: _ClassifyReq(["write", ("type", r"\(")]),
-    ChunkKind.Format: None, # it will be a full token match
-
-    # if construct
-    ChunkKind.IfConstructStart : _ClassifyReq(["if"], "then"),
-    ChunkKind.ElseIf : _ClassifyReq([("type", Keyword.ELSEIF)], "then"),
-    ChunkKind.Else : _ClassifyReq([("type", Keyword.ELSE)], max_len=1),
-    ChunkKind.EndIf : _ClassifyReq([("type", Keyword.ENDIF)], max_len=1),
-
-    # 1-line if-statement
-    # it's REALLY important that this follows ChunkKind.IfConstructStart
-    ChunkKind.IfSingleLine : _ClassifyReq([("type", Keyword.IF)]),
-
-    # Do Statement Related
-    ChunkKind.DoWhileConstructStart: _ClassifyReq(
-        [("type", Keyword.DOWHILE)], min_len = 2
-    ),
-    ChunkKind.DoConstructStart : _ClassifyReq(
-        [("type", Keyword.DO)], min_len = 2
-    ),
-    ChunkKind.EndDo : _ClassifyReq([("type", Keyword.ENDDO)], max_len = 1),
-
-}
-
-def _get_chunk_kind(token_list):
-    # assume that the label is already removed if there is one
-    ntokens = len(token_list)
-    if ntokens == 0:
-        raise ValueError()
-    elif (ntokens == 1) and isinstance(token_list[0].type, ChunkKind):
-        return token_list[0].type
-
-    for kind, req in _reqs.items():
-        if req is None:
-            continue
-        elif req.tok_matches(token_list):
-            return kind
-    else:
-        return ChunkKind.Uncategorized
-
 class Token(NamedTuple):
-    type: Union[str, ChunkKind]
+    type: Union[str, _TokenEnum]
     string: str
     lineno: int
     column: int
@@ -603,7 +414,6 @@ class Tokenizer:
             )
 
         return tokens, trailing_comment_start, has_label
-    
 
 
 _INTERNAL_TOKEN_TYPE_MAP = {
@@ -668,13 +478,9 @@ def scan_chunk(chunk_lines):
     return Tokenizer().tokenize(chunk_lines)
 
 
-
-        
-
-
 def process_code_chunk(chunk_lines):
     tokens, trailing_comment_start, has_label = scan_chunk(chunk_lines)
-    kind = _get_chunk_kind(tokens[int(has_label):])
+    kind = None # this was originally a ChunkKind enum-member (but no longer needed)
     return kind, tokens, trailing_comment_start, has_label
 
 

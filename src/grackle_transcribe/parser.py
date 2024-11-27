@@ -12,7 +12,7 @@ from .token import (
     BuiltinFn,
     BuiltinProcedure,
     Keyword,
-    ChunkKind, Literal, Operator, Token, token_has_type, Type,
+    Literal, Operator, Token, token_has_type, Type,
     compressed_concat_tokens
 )
 
@@ -186,10 +186,6 @@ class ArrayAccess(Expr):
 
 
 ## then we can create special statements
-#
-# with the benefit of hindsight, I think the whole principle of ChunkKind was
-# a mistake... I think we should have just parsed Stmts. We are kinda stuck
-# with it for now...
 
 @dataclasses.dataclass(frozen=True)
 class UncategorizedStmt(Stmt):

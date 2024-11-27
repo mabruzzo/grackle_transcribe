@@ -1,3 +1,7 @@
+# this file was originally used for converting logical type to MASK_KIND
+# -> a lot about the codebase has changed since then (there may be some kinks)
+# -> more importantly, the employed strategies probably aren't very robust
+
 from grackle_transcribe.token import (
     process_code_chunk, Type,
 )
@@ -76,24 +80,3 @@ elif False:
             print("FILES ARE EQUAL!")
         else:
             raise RuntimeError("the copied file isn't the same!")
-        
-        if False:
-            """
-            for region in it:
-                for lineno, item in region.lineno_item_pairs:
-                    if isinstance(item, OMPDirective):
-                        print(lineno, "OMPDIRECTIVE", item.lines)
-                        #pass
-                    elif isinstance(item, Code):
-                        kind, tokens, trailing_comment_start, has_label \
-                            = process_code_chunk(item.lines)
-                        if kind == ChunkKind.Uncategorized:
-                            #print(lineno, has_label, [token.string for token in tokens])
-                            pass
-                        else:
-                            #print(lineno, kind, has_label)
-                            pass
-                    else:
-                        pass
-                        #print(lineno, item.lines)
-            """

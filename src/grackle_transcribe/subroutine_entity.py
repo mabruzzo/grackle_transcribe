@@ -12,7 +12,7 @@ from .token import (
     BuiltinFn,
     BuiltinProcedure,
     Keyword, Misc,
-    ChunkKind, Literal, Operator, Token, token_has_type, Type,
+    Literal, Operator, Token, token_has_type, Type,
     compressed_concat_tokens
 )
 
@@ -261,7 +261,7 @@ def _unpack_declaration(
 
 
 def _get_typespec_attrs_from_item(item):
-    assert item.kind == ChunkKind.TypeSpec
+    assert token_has_type(item.tokens[0], Type)
     if item.tokens[1].string == ',':
         attr = item.tokens[2].string.lower()
         if attr == "parameter":
@@ -519,45 +519,6 @@ def process_declaration_section(prologue_directives, src_items,
             return IdentifierSpec(**identifiers), entries, src_index
     else:
         raise RuntimeError("something weird happended")
-
-
-
-class _LevelData:
-    def __init__(self, first_item, kind):
-        self.branch_content_pairs = [(first_item, [])]
-        self.kind = kind
-
-        if first_item.kind == ChunkKind.IfConstructStart:
-            pair = ([ChunkKind.ElseIf, ChunkKind.Else], ChunkKind.EndIf)
-        elif first_item.kind in [
-            ChunkKind.DoWhileConstructStart, ChunkKind.DoConstructStart
-        ]:
-            pair = ([], ChunkKind.EndDo)
-        elif first_item.kind == PreprocKind.IFDEF:
-            pair = ([PreprocKind.ELSE], PreprocKind.ENDIF)
-        else:
-            raise ValueError(
-                f"first_item has invalid kind. It must be one of {_STARTKINDS}"
-            )
-        self.branch_kinds, self.level_end_kind = pair
-        self.end_item = None
-
-    def add_branch(self, item):
-        assert item.kind in self.branch_kinds
-        self.branch_content_pairs.append((item, []))
-
-    def append_entry(self, item):
-        self.branch_content_pairs[-1][1].append(item)
-
-    def most_recent_item(self):
-        # for debugging purposes
-        if self.end_item is not None:
-            return self.end_item
-        last_branch_content_pair = self.branch_content_pairs[-1]
-        if last_branch_content_pair[1] == []:
-            return last_branch_content_pair[0]
-        return last_branch_content_pair[1]
-
 
 def _preproc_kind(arg, kind):
     return isinstance(arg, PreprocessorDirective) and arg.kind == kind

@@ -25,7 +25,7 @@ from .parser import (
      _iterate_tokens, ControlConstructKind
 )
 from .stringify import FormattedCodeEntryBuilder
-from .token import Type, ChunkKind, Literal, _NAME_REGEX
+from .token import token_has_type, Keyword, Literal, _NAME_REGEX, Type
 
 # an entry is one of the following types:
 # -> we explicitly forbid it from being a Code instance (although other types
@@ -194,6 +194,7 @@ def write_full_copy(in_fname, out_fname):
                 for _, entry in region.lineno_item_pairs:
                     translator.dispatch_visit(entry)
 
+# The following logic is all pretty old. I'm not sure it even works any more!
 
 class ReplaceLogicalTranslator(EntryVisitor):
 
@@ -235,11 +236,13 @@ class ReplaceLogicalTranslator(EntryVisitor):
             item.tokens
         ))
 
-        if len(logical_tokens) == 0 or item.kind == ChunkKind.SubroutineDecl:
+        if (len(logical_tokens) == 0 or
+            token_has_type(item.tokens, Keyword.SUBROUTINE)):
             self._passthrough_SrcItem(item)
             return
-        elif item.kind == ChunkKind.Call and all(
-            tok.type == "arbitrary-name" for tok in logical_tokens
+        elif (
+            token_has_type(item.tokens[0], Keyword.CALL) and
+            all(tok.type == "arbitrary-name" for tok in logical_tokens)
         ):
             self._passthrough_SrcItem(item)
             return

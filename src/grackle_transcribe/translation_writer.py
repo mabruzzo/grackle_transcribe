@@ -284,7 +284,7 @@ class CppTranslator(EntryVisitor):
         for identifier in entry.identifiers:
             rank = getattr(getattr(identifier,'array_spec',None), 'rank', None)
             is_arg = identifier_spec.is_arg(identifier.name)
-            if (rank is not None) and rank > 1:
+            if (rank is not None) and ((not is_arg) or rank > 1):
                 declared_arrinitspec_l.append(_handle_arr(identifier, is_arg))
             elif is_arg:
                 continue
