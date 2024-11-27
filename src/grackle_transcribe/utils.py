@@ -17,3 +17,27 @@ def index_non_space(s, pos = _DUMMY, end = _DUMMY, *, dflt = _DUMMY):
         raise ValueError("non whitespace not found")
     return dflt
 
+_bad_fnames = ('cool1d_cloudy_old_tables_g.F',
+               'calc_grain_size_increment_1d.F',
+               'gaussj_g.F')
+
+def _valid_fortran_fname(fname):
+    # this probably shouldn't be hardcoded, but we need it in multiple places
+    return fname.endswith('.F') and fname not in _bad_fnames
+
+def add_gracklesrcdir_arg(parser):
+    if hasattr(parser, "addoption"): #pytest parser
+        adder = parser.addoption
+    else: #argparse parser
+        adder = parser.add_argument
+
+    adder(
+        "--grackle-src-dir",
+        action="store",
+        help=(
+            "Specifies the path to the src/clib subdirectory of the grackle "
+            "repository.",
+        )
+    )
+
+
