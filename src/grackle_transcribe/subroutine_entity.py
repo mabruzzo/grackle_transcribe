@@ -5,7 +5,11 @@ from .f_ast_load import (
     create_ast,
     load_AST_Nodes,
     NodeTraverser,
-    FortranASTNode
+    FortranASTNode,
+    _unwrap,
+    _unwrap_child,
+    _has_unwrap_nameseq,
+    _extract_name
 )
 
 from .token import (
@@ -27,10 +31,6 @@ from .src_model import (
     PreprocessorDirective,
     SrcItem,
     SrcRegion,
-)
-
-from .subroutine_object import (
-    _unwrap, _unwrap_child, _has_unwrap_nameseq, _extract_name
 )
 
 from .parser import (
