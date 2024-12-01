@@ -284,7 +284,8 @@ inline double fmin(double a, double b, double c, double d) {
 /// @note
 /// We currently only implement behavior for positive lengths
 inline int mod(int a, int p) {
-  GRIMPL_REQUIRE((a > 0) && (p>0), "currently only support positive values");
+  GRIMPL_REQUIRE((a >= 0) && (p>0),
+      "a must be non-negative and p must be positive");
   return a % p;
 }
 
