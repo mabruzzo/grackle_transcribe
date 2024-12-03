@@ -25,20 +25,31 @@ def _valid_fortran_fname(fname):
     # this probably shouldn't be hardcoded, but we need it in multiple places
     return fname.endswith('.F') and fname not in _bad_fnames
 
-def add_gracklesrcdir_arg(parser, required = False):
+def add_gracklesrc_opt(parser, src_file_opt, required = False):
+
     if hasattr(parser, "addoption"): #pytest parser
         adder = parser.addoption
     else: #argparse parser
         adder = parser.add_argument
 
-    adder(
-        "--grackle-src-dir",
-        action="store",
-        required=required,
-        help=(
-            "Specifies the path to the src/clib subdirectory of the grackle "
-            "repository.",
+    if src_file_opt:
+        flag = '--grackle-src-file'
+        help = (
+            "Specifies the path to a Fortran source file in the Grackle "
+            "repository."
         )
-    )
+    else:
+        flag = "--grackle-src-dir"
+        help = (
+            "Specifies the path to the src/clib subdirectory of the grackle "
+            "repository."
+        )
 
+    adder(flag, action="store", required=required, help=help)
+
+
+def add_gracklesrcdir_arg(parser, required = False):
+    # TODO: remove this function
+    # for compatability reasons, this wraps add_gracklesrc_opt
+    add_gracklesrc_opt(parser, src_file_opt=False, required=required)
 

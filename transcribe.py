@@ -2,31 +2,35 @@ from grackle_transcribe.src_model import LineProvider, get_source_regions
 from grackle_transcribe.subroutine_entity import build_subroutine_entity
 from grackle_transcribe.translation_writer import transcribe
 from grackle_transcribe.utils import (
-    _valid_fortran_fname, add_gracklesrcdir_arg
+    _valid_fortran_fname, add_gracklesrc_opt
 )
+from grackle_transcribe.clike_parse.tool import _add_fnsig_simplifier_optgrp
 
 import argparse
 import os
 import sys
 
 parser = argparse.ArgumentParser(prog='transcriber',)
-add_gracklesrcdir_arg(parser, required = True)
+add_gracklesrc_opt(parser, True, required = True)
+extract_fncall_inspect_conf = _add_fnsig_simplifier_optgrp(parser)
 parser.add_argument(
-    "--fname",
-    help="the basename of the fortran file that you want to transcribe",
-    required=True
+    '--use-C-linkage',
+    action=argparse.BooleanOptionalAction,
+    required=True,
+    help="whether the transcribed function has C linkage"
 )
 
-def main(args):
-    PREFIX = args.grackle_src_dir
-    fname = args.fname
 
-    assert _valid_fortran_fname(fname)
+def main(args):
+    in_fname = args.grackle_src_file
+    assert _valid_fortran_fname(in_fname)
+    use_C_linkage = args.use_C_linkage
+
+    fncall_inspect_conf = extract_fncall_inspect_conf(args)
 
     if True:
-        in_fname = os.path.join(PREFIX, fname)
 
-        with open(os.path.join(PREFIX, fname), 'r') as f:
+        with open(in_fname, 'r') as f:
             provider = LineProvider(f)
             it = get_source_regions(provider)
             for region in it:
@@ -40,7 +44,8 @@ def main(args):
                     transcribe(
                         in_fname, out_f,
                         extern_header_fname = "my-result-decl.h",
-                        use_C_linkage=True
+                        use_C_linkage=True,
+                        fncall_inspect_conf=fncall_inspect_conf
                     )
                 return 0
 

@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Union, NamedTuple, Optional
 
+from .clike_parse.tool import StructMemberArg, CFnCallArgListInfo
 from .identifiers import Constant, Variable
 from .parser import IdentifierExpr
 from .routine_analysis import VariableInfo
@@ -94,15 +95,27 @@ _MODIFIER_MAP = _mk_modifier_mapping()
 
 @dataclass
 class CppIdentifierInfo:
-    string: str
+    string: Optional[str]
     type: _CppType
     wrapped_key: Optional[str]
+    # following attr can only be provided when string is None. In that case,
+    # the identifer corresponds to a member of a struct
+    struct_mem_arg: Optional[StructMemberArg] = None
 
-def _prep_cpp_indentifiers(
+    def __post_init__(self):
+        if self.string is None:
+            assert self.struct_mem_arg is not None
+        elif self.struct_mem_arg is None:
+            assert self.string is not None
+        else:
+            raise RuntimeError("string and struct_mem_arg can't both be None")
+
+def _prep_cpp_identifiers(
         name: str,
         is_arg : bool,
         fortran_identifier: Union[Variable, Constant],
-        var_info: VariableInfo
+        var_info: VariableInfo,
+        struct_mem_arg: Optional[StructMemberArg] = None
     ):
 
     is_const = isinstance(fortran_identifier, Constant)
@@ -116,6 +129,7 @@ def _prep_cpp_indentifiers(
         # in this first case, we don't inject any wrapped variables
         if is_const:
             assert not is_arg
+            assert struct_mem_arg is None
             if fortran_identifier.is_macro:
                 pr_modifier = _CppTypeModifier.MACRO_CONST
             else:
@@ -129,13 +143,16 @@ def _prep_cpp_indentifiers(
     else:
         pr_modifier, wr_modifier = _MODIFIER_MAP[rank, is_arg]
         if getattr(var_info, 'locally_used', True):
-            wr_name = f'{name}_data_'
+            wr_name, wr_struct_mem_arg = f'{name}_data_', None
             wrapped_key = wr_name.lower()
+            if struct_mem_arg is not None:
+                wr_name, wr_struct_mem_arg = None, struct_mem_arg
             wr_t = _CppType(fortran_identifier.type, wr_modifier)
             wrapped_pair = (
                 wrapped_key,
                 CppIdentifierInfo(
-                    string=wr_name, type=wr_t, wrapped_key=None
+                    string=wr_name, type=wr_t, wrapped_key=None,
+                    struct_mem_arg=struct_mem_arg
                 )
             )
         else:
@@ -143,11 +160,16 @@ def _prep_cpp_indentifiers(
             wrapped_key = None
             wrapped_pair = None
 
-    pr_name = name
+    pr_name, pr_struct_mem_arg, pr_key = name, None, name.lower()
+    if (struct_mem_arg is not None) and (wrapped_pair is None):
+        pr_name, pr_struct_mem_arg = None, struct_mem_arg
     pr_t = _CppType(fortran_identifier.type, pr_modifier)
     primary_pair = (
-        pr_name,
-        CppIdentifierInfo(string=pr_name, type=pr_t, wrapped_key=wrapped_key)
+        pr_key,
+        CppIdentifierInfo(
+            string=pr_name, type=pr_t, wrapped_key=wrapped_key,
+            struct_mem_arg=pr_struct_mem_arg
+        )
     )
 
     assert rank == primary_pair[1].type.modifier.array_rank, "sanity check"
@@ -155,15 +177,17 @@ def _prep_cpp_indentifiers(
         assert rank == wrapped_pair[1].type.modifier.array_rank, "sanity check"
     return primary_pair, wrapped_pair
 
+_UNINITIALIZED = object()
 
-def _build_identifier_map(fortran_identifier_spec, identifier_analysis_map):
+def _build_identifier_map(fortran_identifier_spec, identifier_analysis_map,
+                          c_fn_call_info: Optional[CFnCallArgListInfo]=None ):
     fortran_to_cpp_map = {}
     cpp_identifier_pairs = []
 
     fortran_arg_names = [
         arg.name.lower() for arg in fortran_identifier_spec.arguments
     ]
-    cpp_arg_names = [None for elem in fortran_arg_names]
+    cpp_arg_names = [_UNINITIALIZED for elem in fortran_arg_names]
 
     identifier_analysis_map_accesses = 0
 
@@ -177,17 +201,29 @@ def _build_identifier_map(fortran_identifier_spec, identifier_analysis_map):
             arg_index = None
         is_arg = (arg_index is not None)
 
+        # if the identifier is an argument, and the c_fn_call_info object (if
+        # present) indicates that the argument is commonly called by passing a
+        # struct member, we take some special steps (essentially we assume that
+        # the struct is passed instead of this argument)
+        if is_arg and c_fn_call_info is not None:
+            struct_mem_arg = c_fn_call_info.arg_l[arg_index]
+            if not isinstance(struct_mem_arg, StructMemberArg):
+                struct_mem_arg = None
+        else:
+            struct_mem_arg = None
+
         try:
             var_info = identifier_analysis_map[name]
             identifier_analysis_map_accesses+=1
         except KeyError:
             var_info = None
-        primary_pair, wrapped_pair = _prep_cpp_indentifiers(
+        primary_pair, wrapped_pair = _prep_cpp_identifiers(
             # use fortran_var.name for proper capitalization
             name=fortran_var.name,
             is_arg=is_arg,
             fortran_identifier=fortran_var,
-            var_info=var_info
+            var_info=var_info,
+            struct_mem_arg=struct_mem_arg
         )
 
         fortran_to_cpp_map[name] = primary_pair[0]
@@ -203,7 +239,7 @@ def _build_identifier_map(fortran_identifier_spec, identifier_analysis_map):
             cpp_arg_names[arg_index] = arg_name
 
     assert len(identifier_analysis_map) == identifier_analysis_map_accesses
-    assert None not in cpp_arg_names
+    assert _UNINITIALIZED not in cpp_arg_names
 
     cpp_identifiers = dict(cpp_identifier_pairs)
     assert len(cpp_identifiers) == len(cpp_identifier_pairs)
@@ -216,23 +252,27 @@ def _build_identifier_map(fortran_identifier_spec, identifier_analysis_map):
 class IdentifierUsage(Enum):
     ScalarValue = auto()
     ScalarAddress = auto()
-    ArrValue = auto() # for numpy-like operations
-    ArrAddress = auto()
-    ArrAccessValue = auto()
-    ArrAccessAddress = auto()
+    ArrValue = auto()          # for numpy-like operations
+    ArrAddress = auto()        # in C, this is the pointer to the 1st value
+    ArrAccessValue = auto()    # in C, this might be arr[idx]
+    ArrAccessAddress = auto()  # in C, this might be &arr[idx]
 
 class _IdentifierModel:
     # need to model the C++ data-type so we can properly provide .data
     def __init__(
         self,
         fortran_identifier_spec,
-        identifier_analysis_map = None
+        identifier_analysis_map = None,
+        c_fn_call_info = None
     ):
         self.fortran_identifier_spec = fortran_identifier_spec
         if identifier_analysis_map is None:
             identifier_analysis_map = {}
+            assert c_fn_call_info is None
         fortran_to_cpp_map, cpp_identifiers = _build_identifier_map(
-            fortran_identifier_spec, identifier_analysis_map
+            fortran_identifier_spec,
+            identifier_analysis_map,
+            c_fn_call_info=c_fn_call_info
         )
         self.fortran_to_cpp_key = fortran_to_cpp_map
         self.cpp_identifiers = cpp_identifiers
@@ -287,6 +327,7 @@ class _IdentifierModel:
             cpp_info = self.cpp_identifiers[identifier]
             var_name = cpp_info.string
             cpptype = cpp_info.type
+            struct_mem_arg = cpp_info.struct_mem_arg
         else:
             if isinstance(identifier, IdentifierExpr):
                 fortran_var_name = identifier.token.string
@@ -297,6 +338,7 @@ class _IdentifierModel:
             )
             var_name = primary_cpp_info.string
             cpptype = primary_cpp_info.type
+            struct_mem_arg = primary_cpp_info.struct_mem_arg
 
         modifier = cpptype.modifier
 
@@ -311,9 +353,14 @@ class _IdentifierModel:
                     (modifier == _CppTypeModifier.NONE) or
                     (modifier == _CppTypeModifier.MACRO_CONST)
                 ):
+                    assert struct_mem_arg is None
                     return f'&{var_name}' if need_ptr else var_name
                 elif modifier == _CppTypeModifier.scalar_pointer:
-                    return var_name if need_ptr else f'(*{var_name})'
+                    if struct_mem_arg is None:
+                        return var_name if need_ptr else f'(*{var_name:s})'
+                    else:
+                        assert var_name is None
+                        return struct_mem_arg.accessexpr_in_fn(need_ptr)
 
             case IdentifierUsage.ArrAddress:
                 if (arr_ndim is not None) and (arr_ndim != modifier.array_rank):
@@ -321,9 +368,13 @@ class _IdentifierModel:
                         "the identifier doesn't have the expected rank"
                     )
                 elif modifier.is_pointer():
+                    if struct_mem_arg is not None:
+                        assert var_name is None
+                        return struct_mem_arg.accessexpr_in_fn(True)
                     return var_name
                 elif modifier.is_vector() or modifier.is_view():
-                    return f'{var_name}.data()'
+                    assert struct_mem_arg is None
+                    return f'{var_name:s}.data()'
 
             case IdentifierUsage.ArrAccessValue:
                 _valid_modifiers = (
@@ -336,6 +387,17 @@ class _IdentifierModel:
                     raise ValueError(
                         "the identifier doesn't have the expected rank"
                     )
+                elif struct_mem_arg is not None:
+                    if modifier is not _CppTypeModifier.array_pointer_1D:
+                        raise NotImplementedError(
+                            f"unexpected modifier, {modifier}, for the struct "
+                            "member that was originally passed to the "
+                            f"subroutine as {struct_mem_arg.original_arg_str}"
+                        )
+                    out = struct_mem_arg.accessexpr_in_fn(True)
+                    if out[0] == '&':
+                        raise RuntimeError()
+                    return out
                 elif modifier in _valid_modifiers:
                     return var_name
 

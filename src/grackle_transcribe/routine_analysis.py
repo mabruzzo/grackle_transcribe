@@ -38,9 +38,9 @@ def _iterate_var_names(grp):
             stack.pop()
         else:
             if isinstance(elem, IdentifierExpr):
-                yield elem.token.string
+                yield elem.token.string, False
             elif isinstance(elem, ArrayAccess):
-                yield elem.array_name.token.string
+                yield elem.array_name.token.string, True
                 stack.append(
                     iterate_true_contents(elem.arg_l, is_variable)
                 )
@@ -67,13 +67,20 @@ class VariableInspectionVisitor(EntryVisitor):
 
     def visit_Stmt(self, entry):
         if isinstance(entry, CallStmt):
-            for var_name in _iterate_var_names(entry.arg_l):
+            for var_name, is_arr_access in _iterate_var_names(entry.arg_l):
                 self.info_map[var_name.lower()].passed_to_subroutine = True
+
+                # the following if-statement is required to properly handle
+                # cases like passing a single element of `u` to
+                # lookup_cool_rates0d inside of solve_rate_cool_g.
+                if is_arr_access:
+                    self.info_map[var_name.lower()].locally_used = True
+
             # based on the position in the arg list and knowledge about the
             # subroutine, we could surmise whether the variable is mutated by
             # the subroutine
         else:
-            for var_name in _iterate_var_names(entry):
+            for var_name, _ in _iterate_var_names(entry):
                 self.info_map[var_name.lower()].locally_used = True
 
             # todo: modify self.info_map[var_name].locally_mutated based on

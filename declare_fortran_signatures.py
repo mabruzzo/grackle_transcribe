@@ -138,7 +138,7 @@ def declarations_iter(fnames, PREFIX):
                 yield c_like_fn_signature(
                     subroutine,
                     wrapped_by_fortran_name=True
-                )
+                )[0]
 
 def main(args):
     PREFIX = args.grackle_src_dir

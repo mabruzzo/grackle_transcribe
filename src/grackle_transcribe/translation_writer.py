@@ -3,6 +3,8 @@ import more_itertools
 from itertools import cycle
 import textwrap
 
+
+from .clike_parse.tool import parse_fn_call as parse_clike_fn_call
 from .cpp_identifier_model import (
     IdentifierUsage, _IdentifierModel, _TYPE_MAP,
     ArrInitSpec, get_translated_declaration_lines
@@ -73,37 +75,116 @@ def _arglines(arg_list, indent = '  '):
     if len(cur_buf) > 0:
         yield ''.join(cur_buf)
 
-
-def c_like_fn_signature(subroutine, identifier_model = None,
-                        wrapped_by_fortran_name = False):
-    if identifier_model is None:
-        def _get_argname(arg):
-            modify = (arg.array_spec is not None) and (arg.array_spec.rank > 1)
-            return f"{arg.name}_data_ptr" if modify else arg.name
+def _fmt_function(routine_name, indent, arg_l,
+                  wrapped_by_fortran_name,
+                  compressed_args = True,
+                  is_function_call = False):
+    if not compressed_args:
+        arg_list_str = indent + f',\n {indent}'.join(arg_l)
     else:
-        def _get_argname(arg):
-            return identifier_model.cpp_arglist_identifier(arg.name)
-
-    arg_list = []
-    for arg in subroutine.arguments:
-        arg_name = _get_argname(arg)
-        arg_list.append(f"{_TYPE_MAP[arg.type]}* {arg_name}")
-
-
-    indent = '  '
-    if False:
-        arg_list_str = indent + f',\n {indent}'.join(arg_list)
-    else:
-        arg_list_str = '\n'.join(_arglines(arg_list, indent = indent))
+        arg_list_str = '\n'.join(_arglines(arg_l, indent = indent))
 
     if wrapped_by_fortran_name:
-        routine_name = f'FORTRAN_NAME({subroutine.name})'
+        routine_name = f'FORTRAN_NAME({routine_name})'
     else:
-        routine_name = subroutine.name
+        routine_name = routine_name
 
-    rslt = '\n'.join([f"void {routine_name}(", arg_list_str, ')'])
-    return rslt
+    if is_function_call:
+        prefix, suffix = f"{routine_name}(", ");"
+    else:
+        prefix, suffix = f"void {routine_name}(", ")"
+    return '\n'.join([prefix, arg_list_str, suffix])
 
+
+# the following function probably does a little too much (maybe we should
+# refactor in the future?)
+def c_like_fn_signature(subroutine, identifier_model = None,
+                        wrapped_by_fortran_name = False,
+                        c_fn_call_info = None):
+    """
+    Come up with a C-like function signature for a given subroutine
+
+    Parameters
+    ----------
+    subroutine : SubroutineEntity
+        Holds baseline information about the parsed Fortran routine
+    identifier_model : optional
+        Holds information mapping the Fortran variables to C++ variables. When
+        specified, this may slightly change argument names
+    wrapped_by_fortran_name: bool, optional
+        Whether the function name should be wrapped by the FORTRAN_NAME macro
+        to achieve proper name-mangling
+    c_fn_call_info: CFnCallArgListInfo, optional
+        This can be the object returned by `clike_parse.tool.parse_fn_call`,
+        which specifies information about a location where the relevant
+        subroutine is called. When specified, we try to reduce the number of
+        arguments passed into this function and pass in structs instead.
+
+    Returns
+    -------
+    signature: str
+        The translated function signature
+    local_fn_call: str or None
+        This is None unless c_fn_call_info is provided. In this case, this
+        should be the new local function call.
+    n_args: int
+        The number of arguments
+    """
+
+    def _arglist_entry(arg):
+        if identifier_model is None:
+            modify = (arg.array_spec is not None) and (arg.array_spec.rank > 1)
+            arg_name = f"{arg.name}_data_ptr" if modify else arg.name
+        else:
+            arg_name = identifier_model.cpp_arglist_identifier(arg.name)
+        return f"{_TYPE_MAP[arg.type]}* {arg_name}"
+
+    indent = '  '
+
+    arg_list = []
+    if c_fn_call_info is None:
+        for i, arg in enumerate(subroutine.arguments):
+            arg_list.append(_arglist_entry(arg))
+        local_args = None
+    else:
+        assert not wrapped_by_fortran_name
+        local_args = []
+        assert len(subroutine.arguments) == len(c_fn_call_info.arg_l)
+        # step build up arg_list & local_args using the arguments directly
+        # taken from the Fortran subroutine (skipping over all arguments that
+        # can be accessed from structs)
+        for arg, local_arg in zip(subroutine.arguments, c_fn_call_info.arg_l):
+            if isinstance(local_arg, str): # preserve the argument
+                arg_list.append(_arglist_entry(arg))
+                local_args.append(local_arg)
+            else:
+                pass # we skip over the argument, since we choose to pass in
+                     # the struct
+        # add any structs as arguments
+        l = sorted(
+            c_fn_call_info.employed_struct_vars, key=lambda e: e.type.value
+        )
+        for struct_var in l:
+            arg_list.append(f'{struct_var.type.value}* {struct_var.var_name}')
+            if struct_var.is_ptr:
+                local_args.append(struct_var.var_name)
+            else:
+                local_args.append(f'&{struct_var.var_name}')
+
+    signature = _fmt_function(
+        subroutine.name, indent=indent, arg_l=arg_list,
+        wrapped_by_fortran_name = wrapped_by_fortran_name,
+        compressed_args = True
+    )
+    if local_args is None:
+        local_fn_call = None
+    else:
+        local_fn_call = _fmt_function(
+            subroutine.name, indent=indent, arg_l=local_args,
+            wrapped_by_fortran_name=wrapped_by_fortran_name,
+            compressed_args=True, is_function_call=True
+        )
+    return signature, local_fn_call, len(arg_list)
 
 def _get_constant_decl_init(decl, line, identifier_model):
     # This function cuts a lot of corners. To do this more properly, we would
@@ -447,7 +528,8 @@ extern "C" {
 """)
 
 def transcribe(in_fname, out_f, prolog = None, epilog = None,
-               extern_header_fname = None, use_C_linkage = True):
+               extern_header_fname = None, use_C_linkage = True,
+               fncall_inspect_conf=None):
     """
     This does the heavy lifting of transcribing the first routine in
     ``in_fname`` and writing it to ``out_f``.
@@ -489,19 +571,50 @@ def transcribe(in_fname, out_f, prolog = None, epilog = None,
             if not region.is_routine:
                 continue
             subroutine = build_subroutine_entity(region, it.prologue)
-
-            # todo: in the future, pass props into _IdentifierModel constructor
             props = analyze_routine(subroutine)
+
+            if fncall_inspect_conf is None:
+                c_fn_call_info = None
+            else:
+                print("Parsing subroutine call-site from C/C++ routine")
+                c_fn_call_info = parse_clike_fn_call(
+                    fn_call_loc=fncall_inspect_conf.fn_call_loc,
+                    fn_name=subroutine.name.lower(),
+                    local_struct_vars=fncall_inspect_conf.local_struct_vars
+                )
+
+            # TODO: pass in c_fn_call_info as an argument
             identifier_model = _IdentifierModel(
                 subroutine.identifiers,
-                identifier_analysis_map=props
+                identifier_analysis_map=props,
+                c_fn_call_info=c_fn_call_info
             )
 
             translator = CppTranslator(
                 writer, identifier_model = identifier_model
             )
 
-            signature = c_like_fn_signature(subroutine, identifier_model)
+            signature, local_fn_call_str, n_args = c_like_fn_signature(
+                subroutine, identifier_model, c_fn_call_info=c_fn_call_info
+            )
+
+            print()
+            print("Translated signature:")
+            print(signature)
+            print()
+            if local_fn_call_str is not None:
+                if n_args != len(subroutine.arguments):
+                    print(
+                        "The number of arguments has changed in the "
+                        f"transcription from {len(subroutine.arguments)} to "
+                        f"{n_args}"
+                    )
+                else:
+                    print("The args may have changed during transcription")
+                print("The function call at the specified location in the C "
+                      "file should look like:")
+                print(local_fn_call_str)
+
             if extern_header_fname is not None:
                 _write_declaration_header(
                     extern_header_fname, signature, use_C_linkage
