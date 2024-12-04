@@ -4,9 +4,8 @@ This is a quick and dirty tool to aid with transcribing the Fortran files of [Gr
 
 In case you are randomly stumbling onto this project:
 
-    * this is **NOT** a generalized parser translator of Fortran (it is tuned to the dialect used by Grackle). It may also not fully work, but the goal is to help get us most of the way to a transcription (and conservatively identify sections of code that can't be translated)
-
-    * currently, we are trying not to target any advanced C++ features. Currently, we are trying to use a minimal feature-set that we find useful. After the transcription, we may shift to a more C-like subset of Grackle
+- this is **NOT** a generalized parser translator of Fortran (it is tuned to the dialect used by Grackle). It may also not fully work, but the goal is to help get us most of the way to a transcription (and conservatively identify sections of code that can't be translated)
+- currently, we are trying not to target any advanced C++ features. Currently, we are trying to use a minimal feature-set that we find useful. After the transcription, we may shift to a more C-like subset of Grackle
 
 
 > [!IMPORTANT]  
@@ -34,13 +33,11 @@ To run this code, you need to clone this repository. Then you should install the
 pip install -e .
 ```
 
-
 # Using the tool
 
-This tool has been designed to work with a particular branch of Grackle.
+This tool has been designed to work with a particular branch of Grackle that can be found [here](https://github.com/mabruzzo/grackle/tree/gen2024-dev). This branch is called `gen2024-dev` (some additional details are provided at the top of its README.
 
-> [!NOTE]  
-> TODO: describe that branch
+The most important change made in this branch is that a custom ``MASK_TYPE`` type has replaced nearly every occurence of ``logical``.
 
 ## Running the tests
 
@@ -54,6 +51,8 @@ pytest --grackle-src-dir=/path/to/grackle/src/clib
 
 ## How it works
 
+This tool assumes that some tweaks have been applied to Grackle in order to ease the burden of transcription.
+
 ### Getting Subroutine Declarations
 
 You need to generate a C-header that declare C function-signatures for all fortran subroutines. From the root of this repository, invoke:
@@ -62,9 +61,13 @@ You need to generate a C-header that declare C function-signatures for all fortr
 python declare_fortran_signatures.py --grackle-src-dir=/path/to/grackle/src/clib
 ```
 
-### Transcription
+An example of the transcribed file can be found [here](https://pastebin.com/qFf2bKK2).
 
-Then you can use the ``transcribe.py`` script to generate a source and header file for the first function in a given file. An invocation might look like:
+### Quick Transcription Example
+
+Then you can use the ``transcribe.py`` script to generate a source and header file for the first function in a given file.
+
+Here we provide 2 quick examples of invocations (jump to the next section for more sophisticated examples -- we also show some examples of the results).
 
 ```sh
 python transcribe.py \
@@ -82,14 +85,6 @@ python transcribe.py \
 
 > [!NOTE]  
 > I have confirmed that both invocations produce C++ code that succesfully compiles with C++ 17. I have also confirmed that using the second set of C++ code passes all of the tests[^5].
-
-These generated files assume that the the source files ``other_files/utils-cpp.C`` and ``utils-cpp.hpp`` will also be included in the same build process.
-
-
-The ``--use-C-linkage`` argument is used to add annotations to control add ``extern "C"`` annotations to the transcribed code to ensure that the transcribed function can be called from C code
-- the block controls calling conventions/name mangling
-- This is necessary for these particular examples since the transcribed functions are currently called from ``solve_chemistry.c`` and ``calculate_cooling_time.c`` (which are currently C files).
-- If a transcribed subroutine doesn't need to be called from C, (i.e. it is onlycalled from transcribed C++ functions) then we can skip this argument.
 
 ### Transcription (argument reduction)
 
@@ -119,6 +114,8 @@ python transcribe.py \
     --photo_rate_storage_ptr '&my_uvb_rates'
 ```
 
+Here's are links to the resulting [source file](https://pastebin.com/bATxZL8D) and [header file](https://pastebin.com/e5WEgeKJ). For reference, [this](https://github.com/mabruzzo/grackle/blob/gen2024-dev/src/clib/solve_rate_cool_g.F) is a link to the original Fortran code that was transcribed.
+
 OR
 
 ```sh
@@ -133,11 +130,36 @@ python transcribe.py \
     --photo_rate_storage_ptr '&my_uvb_rates'
 ```
 
+Here's are links to the resulting [source file](https://pastebin.com/0y2nekQN) and [header file](https://pastebin.com/myEYZQJi). For reference, [this](https://github.com/mabruzzo/grackle/blob/gen2024-dev/src/clib/cool_multi_time_g.F) is a link to the original Fortran code that was transcribed.
+
 The former reduces the number of arguments from 469 to 11 and the latter call reduces the arguments from 325 down to 10. I have confirmed that both invocations produce C++ code that succesfully compiles with C++ 17. Again, I have also confirmed that using the second set of C++ code passes all of the tests.
 
 
 > [!NOTE]  
-> In a sense, blind usage of this functionality exchanges the "code smell" of too many argumnents for the "code smell" of passing more information than is necessary to a function. This is probably a worthwhile tradeoff (especially for functions close to the top of the call stack) since the former "code smell" makes refactoring a very tedious/error-prone process.[^6]
+> In a sense, blind usage of the argument-reduction-functionality exchanges the "code smell" of too many argumnents for the "code smell" of passing more information than is necessary to a function. This is probably a worthwhile tradeoff (especially for functions close to the top of the call stack) since the former "code smell" makes refactoring a very tedious/error-prone process.[^6]
+
+The ``--use-C-linkage`` argument is used to add annotations to control add ``extern "C"`` annotations to the transcribed code to ensure that the transcribed function can be called from C code
+- the block controls calling conventions/name mangling
+- This is necessary for these particular examples since the transcribed functions are currently called from ``solve_chemistry.c`` and ``calculate_cooling_time.c`` (which are currently C files).
+- If a transcribed subroutine doesn't need to be called from C, (i.e. it is onlycalled from transcribed C++ functions) then we can skip this argument.
+
+### Actually using the Transcribed Code
+
+These generated files assume that the following files are also included in the build-process (you need to copy them into source-directory)
+- the [utils-cpp.C](other_files/utils-cpp.C) and [utils-cpp.hpp](other_files/utils-cpp.hpp) (from this repository's ``other_files`` subdirectory). These implement some useful C++ functionality to simplify transcription (we could/should trim this down to some degree in the future).
+- the generated previously mentioned header holding c-declarations of every subroutine. (we decribed how to generate that file [here](#getting-subroutine-declarations))
+
+You also need to ensure that the C++ files are compiled with the ``--std=c++17`` option (you will probably get errors if you don't do this).
+
+*TODO: add more details about how to modify build-system and how to modify the source files*
+
+## General Philosophy
+
+The basic philosophy is to perform these translations one subroutine at a time, from the top of the call-stack down to the bottom.
+
+We also want to use previously completed work: 
+- like the proposed transcriptions of interpolators from the grackle-project/grackle#160 PR
+- or maybe the some of the transcriptions of in the grackle-project/grackle#153 PR (this may be more tricky to include)
 
 [^1]: This code was originally written just to be used myself. I hadn't really intended to share it with anybody else. Additionally, development involved a lot of experimentation. Furthermore, the scope of the project creeped a lot (the original intention was to write some tools to help with transcribing chunks of code).
 
