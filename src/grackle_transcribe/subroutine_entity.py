@@ -450,10 +450,19 @@ def process_declaration_section(prologue_directives, src_items,
                 _register_identifier(constant)
 
             # consume all PARAMETER nodes that corrrespond to this statement
-            for name in _concrete_constants:
+            for count_i, name in enumerate(_concrete_constants):
                 tmp = _unpack_declaration(next(node_itr), is_const=True)
-                assert len(tmp) == 1
-                assert tmp[0][0].lower() == name.lower()
+                if len(tmp) != 1:
+                    raise AssertionError(
+                        "something is wrong! it seems like there wasn't a "
+                        "declaration"
+                    )
+                elif tmp[0][0].lower() != name.lower():
+                    raise AssertionError(
+                        f"part {count_i+1} of the declaration to be for "
+                        f"the {name} identifier. It seems to be for "
+                        f"{tmp[0][0].lower()}."
+                    )
 
         elif item.first_token_has_type(Misc.ImplicitNone):
             assert node_itr.peek().name == "ImplicitPart"

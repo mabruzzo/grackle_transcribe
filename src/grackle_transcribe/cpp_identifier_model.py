@@ -8,6 +8,69 @@ from .parser import IdentifierExpr
 from .routine_analysis import VariableInfo
 from .token import Type
 
+# First, we define logic that remaps names that may clash with C macros
+# ---------------------------------------------------------------------
+# This logic only really comes up for identifiers that represent physical
+# constants (i.e. Fortran macros or Fortran parameter variables).
+
+
+# The following map, maps MACRO identifiers from Fortran identifier to a
+# corresponding C identifier
+# -> there are a few special cases that we will expand on in comments below
+# -> the vast majority of remapping addresses a common case where
+#      - where the C layer and Fortran layer both define a constant using
+#        exactly the same name and nominal value
+#      - the C layer's version is defined as a double-precision literal
+#      - the Fortran layer's version is defined as a floating point literal
+#        with the same precision as gr_float
+#    in these cases, we remap the Fortran identifier to the same name but with
+#    a _grflt suffix.
+_FORTRAN_MACRO_CONST_REMAP = {
+    # the following is associated with different literal values depending on
+    # the precision (neither value matches that of the C layer's `pi` macro)
+    "pi_val" : "pi_fortran_val",
+    # in the following 2 cases are kinda special:
+    # - the `mass_e` and `mass_h` Fortran macros perfectly map to `me` and `mh`
+    #   (before considering the literal's precision)
+    # - Like many other Fortran constants, the literal's precision should match
+    #   the precision of gr_float
+    "mass_e" : "me_grflt",
+    "mass_h" : "mh_grflt",
+    # the following cases are not special at all
+    "kboltz" : "kboltz_grflt",
+    "hplanck" : "hplanck_grflt",
+    "ev2erg" : "ev2erg_grflt",
+    "sigma_sb" : "sigma_sb_grflt",
+    "clight" : "clight_grflt",
+    "GravConst" : "GravConst_grflt",
+    "SolarMass" : "SolarMass_grflt",
+    "Mpc" : "Mpc_grflt",
+    "kpc" : "kpc_grflt",
+    "pc" : "pc_grflt",
+    # we define a custom version of huge and tiny since the C layer
+    # theoretically allows arbitrary choices to be made
+    "huge" : "huge_fortran_val",
+    "tiny" : "tiny_fortran_val"
+}
+
+def _standard_renamed_constant_name(fortran_name, fortran_identifier):
+    # there are some inconsistencies in the identifier and identifier naming
+    # used in the existing C layer and Fortran layer.
+
+    if fortran_identifier.is_macro:
+        return _FORTRAN_MACRO_CONST_REMAP.get(fortran_name, None)
+    else:
+        lower_fortran_name = fortran_name.lower()
+        if lower_fortran_name in ["me", "mh", "pi"]:
+            # these names clash with a c-layer macro name
+            out= f"{lower_fortran_name}_local_var"
+            return out
+        else:
+            return None
+
+# next, define typing infrastructure
+# ----------------------------------
+
 _TYPE_TRANSLATION_INFO = {
     Type.i32: ("int", "%d"),
     Type.i64: ("long long", "%lld"),
@@ -110,6 +173,9 @@ class CppIdentifierInfo:
         else:
             raise RuntimeError("string and struct_mem_arg can't both be None")
 
+# now, move onto the guts of the Identifier Model
+# -----------------------------------------------
+
 def _prep_cpp_identifiers(
         name: str,
         is_arg : bool,
@@ -125,6 +191,7 @@ def _prep_cpp_identifiers(
         rank = fortran_identifier.array_spec.rank
         assert not is_const
 
+    remapped_pr_name = None
     if (rank is None) or (rank == 1):
         # in this first case, we don't inject any wrapped variables
         if is_const:
@@ -134,6 +201,10 @@ def _prep_cpp_identifiers(
                 pr_modifier = _CppTypeModifier.MACRO_CONST
             else:
                 pr_modifier = _CppTypeModifier.NONE
+
+            remapped_pr_name = _standard_renamed_constant_name(
+                name, fortran_identifier
+            )
         else:
             pr_modifier, dummy = _MODIFIER_MAP[rank, is_arg]
             assert dummy is None # sanity check!
@@ -160,9 +231,16 @@ def _prep_cpp_identifiers(
             wrapped_key = None
             wrapped_pair = None
 
-    pr_name, pr_struct_mem_arg, pr_key = name, None, name.lower()
+    pr_key = name.lower()
     if (struct_mem_arg is not None) and (wrapped_pair is None):
+        assert remapped_pr_name is None
         pr_name, pr_struct_mem_arg = None, struct_mem_arg
+    elif remapped_pr_name is not None:
+        assert wrapped_pair is None
+        pr_name, pr_struct_mem_arg = remapped_pr_name, None
+    else:
+        pr_name, pr_struct_mem_arg = name, None
+
     pr_t = _CppType(fortran_identifier.type, pr_modifier)
     primary_pair = (
         pr_key,
