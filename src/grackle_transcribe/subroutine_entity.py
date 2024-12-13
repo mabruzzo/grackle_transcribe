@@ -67,7 +67,11 @@ class Declaration:
 
     @property
     def defines_constant(self):
-        return isinstance(self.identifers, Constant)
+        if isinstance(self.identifiers, Constant):
+            return True
+        elif isinstance(self.identifiers, Variable):
+            return False
+        return any(isinstance(e, Constant) for e in self.identifiers)
 
     @property
     def is_precision_conditional(self):
@@ -94,6 +98,14 @@ class ControlConstruct:
     @property
     def n_branches(self):
         return len(self.condition_contents_pair)
+
+    @property
+    def origin(self):
+        first = self.condition_contents_pairs[0][0]
+        if hasattr(first, "src"):
+            return first.src.origin
+        else:
+            return first.origin
 
 
 
@@ -122,6 +134,9 @@ class SubroutineEntity(NamedTuple):
 
     @property
     def constants(self): return self.identifiers.constants
+
+    @property
+    def origin(self): return self.subroutine_stmt.src.origin
 
 
 

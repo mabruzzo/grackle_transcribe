@@ -160,6 +160,8 @@ class OMPDirective(SrcItem):
         self.origin = origin
         if self.compound:
             assert kind is OMPDirectiveKind.UNCATEGORIZED
+            assert self.origin is None
+            self.origin = self.entries[0].origin
             if len(entries) == 3:
                 first_entry_kind = getattr(entries[0], 'kind', None)
                 last_entry_kind = getattr(entries[2], 'kind', None)
@@ -440,6 +442,10 @@ class SrcRegion:
         assert len(lineno_item_pairs) > 0
         self.lineno_item_pairs = lineno_item_pairs
         self.is_routine = is_routine
+
+    @property
+    def origin(self):
+        return self.lineno_item_pairs[0][1].origin
 
 class ItSrcRegion:
     def __init__(self, provider):

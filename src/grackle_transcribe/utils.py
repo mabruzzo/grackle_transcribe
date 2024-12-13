@@ -1,3 +1,5 @@
+import more_itertools
+
 from enum import Enum
 import re
 
@@ -52,4 +54,40 @@ def add_gracklesrcdir_arg(parser, required = False):
     # TODO: remove this function
     # for compatability reasons, this wraps add_gracklesrc_opt
     add_gracklesrc_opt(parser, src_file_opt=False, required=required)
+
+
+def indented_fmt(items, indent = '  ', width = 80, subsequent_indent=None):
+    # we can't use textwrap because we want to ensure that the type
+    # declaration and argname are on the same line
+    delim = ','
+    delim_size = len(delim)
+
+    if subsequent_indent is None:
+        subsequent_indent = indent
+    cur_indent = indent
+
+    cur_buf, cur_buf_size = [], 0
+    itr = more_itertools.peekable(items)
+    for arg in itr:
+        arg_len = len(arg)
+        nominal_size = 1 + arg_len + delim_size
+        if (len(cur_buf) != 0) and ((cur_buf_size + nominal_size) > width):
+            yield ''.join(cur_buf)
+            cur_indent = subsequent_indent
+            cur_buf, cur_buf_size = [], 0
+
+        if len(cur_buf) == 0:
+            cur_buf.append(cur_indent)
+            cur_buf_size += len(cur_indent)
+            latest_chunk, latest_len = [arg], arg_len
+        else:
+            latest_chunk, latest_len = [' ', arg], 1 + arg_len
+
+        if bool(itr): # not exhausted
+            latest_chunk.append(delim)
+            latest_len += delim_size
+        cur_buf += latest_chunk
+        cur_buf_size += latest_len
+    if len(cur_buf) > 0:
+        yield ''.join(cur_buf)
 

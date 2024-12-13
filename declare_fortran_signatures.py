@@ -1,4 +1,3 @@
-#from grackle_transcribe.src_model import *
 from grackle_transcribe.src_model import LineProvider, get_source_regions
 from grackle_transcribe.subroutine_entity import build_subroutine_entity
 from grackle_transcribe.translation_writer import c_like_fn_signature

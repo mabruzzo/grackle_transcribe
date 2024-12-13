@@ -1,9 +1,9 @@
 from dataclasses import dataclass
+from enum import Enum, auto
+from typing import Union
 
-from .identifiers import (
-    IdentifierSpec
-)
-
+from .identifiers import IdentifierSpec
+from .lineno_search import LinenoSearchResult # purely for typing purposes
 from .parser import (
     IdentifierExpr,
     ArrayAccess,
@@ -12,18 +12,29 @@ from .parser import (
     CallStmt,
     iterate_true_contents
 )
-
+from .subroutine_entity import SubroutineEntity
 from .writer import (
     EntryVisitor,
 )
+
+#class _VarAccess(Enum):
+#    NOT_ENCOUNTERED=auto()
+#    UNKNOWN = auto()
+#    READ_FROM = auto()
+#    READ_THEN_MUTATE = auto()
+#    MUTATE = auto()
 
 @dataclass
 class VariableInfo:
     passed_to_subroutine: bool = False
     locally_used: bool = False # not just forwarded to subroutines
-    #locally_mutated: bool = False
+    #var_access: Optional[_VarAcess]
 
     # we might also want to record allocate/deallocate statements
+
+    @property
+    def is_used(self):
+        return self.passed_to_subroutine or self.locally_used
 
 def _iterate_var_names(grp):
     # grp is some kind of grouping of stmt, expressions or tokens
@@ -107,10 +118,53 @@ class VariableInspectionVisitor(EntryVisitor):
                 self.dispatch_visit(content_entry)
         self.dispatch_visit(entry.end)
 
-def analyze_routine(subroutine):
+def analyze_routine(target: Union[SubroutineEntity, LinenoSearchResult]):
+    """
+    extract information about variables used in a given subroutine or in a
+    subsection of a subroutine
+
+    Parameters
+    ----------
+    target : SubroutineEntity or LinenoSearchResult
+        The subroutine entity that we are analyzing. Alternatively, this can
+        specify the result of a line search that corresponds to a statement
+        that is part of a governing statement of a control construct. In this
+        case, we only analyze the control construct.
+
+    Returns
+    -------
+    VariableInspectionVisitor
+
+    """
+    if isinstance(target, SubroutineEntity):
+        subroutine = target
+        entry_itr = subroutine.impl_section
+    elif isinstance(target, LinenoSearchResult):
+
+        subroutine = target.try_get_subroutine()
+        if subroutine is None:
+            raise ValueError(
+                "the specified LinenoSearchResult does not specify a line in "
+                "a subroutine"
+            )
+        elif not target.is_control_construct_stmt:
+            raise ValueError(
+                "lineno_spec doesn't correspond to a governing statement of a "
+                "control construct"
+            )
+        # index -1 of target.src_entry_hierarchy is a governing statement
+        # of the control construct that can be found at index -2
+        entry_itr = [target.src_entry_hierarchy[-2]]
+
+    else:
+        # In the future, we should consider using duck-typing rather than
+        # strict type-checking
+        raise TypeError()
+
+
     vis = VariableInspectionVisitor(subroutine.identifiers)
-    for entry in subroutine.impl_section:
+        
+    for entry in entry_itr:
         vis.dispatch_visit(entry)
     return vis.info_map
-
 

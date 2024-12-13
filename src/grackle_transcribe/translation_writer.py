@@ -36,44 +36,12 @@ from .translator import (
     _translate_stmt, _get_translated_label, _translate_expr
 )
 from .token import Type, Keyword, Misc, token_has_type
-from .utils import index_non_space
+from .utils import index_non_space, indented_fmt
 from .writer import (
     EntryVisitor,
     _Consumer,
     _passthrough_SrcItem
 )
-
-def _arglines(arg_list, indent = '  '):
-
-    # we can't use textwrap because we want to ensure that the type
-    # declaration and argname are on the same line
-    width = 80
-    delim = ','
-    indent_size, delim_size = len(indent), len(delim)
-
-    cur_buf, cur_buf_size = [], 0
-    itr = more_itertools.peekable(arg_list)
-    for arg in itr:
-        arg_len = len(arg)
-        nominal_size = 1 + arg_len + delim_size
-        if (len(cur_buf) != 0) and ((cur_buf_size + nominal_size) > width):
-            yield ''.join(cur_buf)
-            cur_buf, cur_buf_size = [], 0
-
-        if len(cur_buf) == 0:
-            cur_buf.append(indent)
-            cur_buf_size += indent_size
-            latest_chunk, latest_len = [arg], arg_len
-        else:
-            latest_chunk, latest_len = [' ', arg], 1 + arg_len
-
-        if bool(itr): # not exhausted
-            latest_chunk.append(delim)
-            latest_len += delim_size
-        cur_buf += latest_chunk
-        cur_buf_size += latest_len
-    if len(cur_buf) > 0:
-        yield ''.join(cur_buf)
 
 def _fmt_function(routine_name, indent, arg_l,
                   wrapped_by_fortran_name,
@@ -82,7 +50,7 @@ def _fmt_function(routine_name, indent, arg_l,
     if not compressed_args:
         arg_list_str = indent + f',\n {indent}'.join(arg_l)
     else:
-        arg_list_str = '\n'.join(_arglines(arg_l, indent = indent))
+        arg_list_str = '\n'.join(indented_fmt(arg_l, indent = indent))
 
     if wrapped_by_fortran_name:
         routine_name = f'FORTRAN_NAME({routine_name})'
