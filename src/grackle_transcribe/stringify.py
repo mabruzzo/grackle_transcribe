@@ -2,7 +2,7 @@ import more_itertools
 
 from .src_model import Code # for type annotation purposes
 from .token import Token
-from .parser import _iterate_tokens
+from .syntax_unit import _iterate_tokens
 
 from dataclasses import dataclass
 from enum import auto, Enum

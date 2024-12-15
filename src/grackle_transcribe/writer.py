@@ -21,7 +21,7 @@ from .src_model import (
     LineProvider,
     get_source_regions
 )
-from .parser import (
+from .syntax_unit import (
      IdentifierExpr, ArrayAccess, LiteralExpr, Standard1TokenStmt, Stmt, 
      UncategorizedStmt, _iterate_tokens, ControlConstructKind,
      compressed_str_from_Expr

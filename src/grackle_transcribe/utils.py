@@ -91,3 +91,6 @@ def indented_fmt(items, indent = '  ', width = 80, subsequent_indent=None):
     if len(cur_buf) > 0:
         yield ''.join(cur_buf)
 
+def caseless_streq(a: str, b: str):
+    return a.casefold() == b.casefold()
+

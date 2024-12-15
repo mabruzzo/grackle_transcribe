@@ -10,11 +10,7 @@ from .cpp_identifier_model import (
     ArrInitSpec, get_translated_declaration_lines
 )
 from .identifiers import Constant
-from .parser import (
-     IdentifierExpr, LiteralExpr, Standard1TokenStmt, Stmt, UncategorizedStmt,
-     _iterate_tokens, ControlConstructKind, CallStmt,
-     Parser, TokenStream
-)
+from .parser import Parser, TokenStream
 from .routine_analysis import analyze_routine
 from .src_model import (
     SrcItem,
@@ -30,7 +26,11 @@ from .src_model import (
 )
 from .stringify import FormattedCodeEntryBuilder, concat_translated_pairs
 from .subroutine_entity import (
-    Declaration, build_subroutine_entity, ControlConstruct
+    Declaration, build_subroutine_entity, ControlConstruct, SubroutineEntity
+)
+from .syntax_unit import (
+     IdentifierExpr, LiteralExpr, Standard1TokenStmt, Stmt, UncategorizedStmt,
+     _iterate_tokens, ControlConstructKind, CallStmt
 )
 from .translator import (
     _translate_stmt, _get_translated_label, _translate_expr
@@ -74,7 +74,7 @@ def c_like_fn_signature(subroutine, identifier_model = None,
 
     Parameters
     ----------
-    subroutine : SubroutineEntity
+    subroutine : SubroutineSignature or SubroutineEntity
         Holds baseline information about the parsed Fortran routine
     identifier_model : optional
         Holds information mapping the Fortran variables to C++ variables. When
@@ -101,17 +101,20 @@ def c_like_fn_signature(subroutine, identifier_model = None,
 
     def _arglist_entry(arg):
         if identifier_model is None:
-            modify = (arg.array_spec is not None) and (arg.array_spec.rank > 1)
+            modify = arg.prop.is_array and (arg.prop.rank > 1)
             arg_name = f"{arg.name}_data_ptr" if modify else arg.name
         else:
             arg_name = identifier_model.cpp_arglist_identifier(arg.name)
         return f"{_TYPE_MAP[arg.type]}* {arg_name}"
 
+    if isinstance(subroutine, SubroutineEntity):
+        subroutine = subroutine.subroutine_signature()
+
     indent = '  '
 
     arg_list = []
     if c_fn_call_info is None:
-        for i, arg in enumerate(subroutine.arguments):
+        for i, arg in enumerate(subroutine.arguments_iter()):
             arg_list.append(_arglist_entry(arg))
         local_args = None
     else:

@@ -23,7 +23,7 @@ from .token import (
 from .identifiers import(
     ArrSpec, Constant, Variable, IdentifierSpec
 )
-
+from .subroutine_sig import build_subroutine_sig
 
 from .src_model import (
     Code,
@@ -36,6 +36,7 @@ from .src_model import (
 from .parser import (
     ControlConstructKind,
     Stmt,
+    IdentifierExpr,
     Parser,
     UncategorizedStmt,
     TokenStream,
@@ -137,6 +138,9 @@ class SubroutineEntity(NamedTuple):
 
     @property
     def origin(self): return self.subroutine_stmt.src.origin
+
+    def subroutine_signature(self):
+        return build_subroutine_sig(self.name, self.identifiers)
 
 
 
@@ -711,3 +715,33 @@ def build_subroutine_entity(
         impl_section = impl_section,
         endroutine_stmt = endroutine_stmt
     )
+
+
+"""
+def consistent_scalar_arr_prop(
+        arg: Union[Constant, Variable, "ArgDescr"],
+        prop: ScalarArrayProp,
+        ignore_shape_specifics = True
+    ):
+    # we just care about rank matches (exact shape matches are harder!)
+    assert ignore_shape_specifics
+
+    if isinstance(arg, Constant):
+        return prop.is_scalar
+    elif isinstance(arg, Variable):
+        array_spec = arg.array_spec
+        if array_spec is None:
+            return prop.is_scalar:
+        elif prop.is_scalar:
+            return False
+        return prop.rank == array_spec.rank
+    elif isinstance(arg, ArgDescr):
+        if prop.is_scalar:
+            return arg.prop.is_scalar
+        elif arg.prop.is_scalar:
+            return False
+        return prop.rank == arg.prop.rank
+    else:
+        raise TypeError("arg has unexpected type")
+"""
+
