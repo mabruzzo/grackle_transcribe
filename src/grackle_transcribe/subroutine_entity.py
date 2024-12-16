@@ -629,7 +629,8 @@ def _process_impl_items(parser, first_item, src_items):
     )
 
 def process_impl_section(identifiers, src_items,
-                         subroutine_nodes):
+                         subroutine_nodes, *,
+                         signature_registry=None):
     """
     Returns
     -------
@@ -650,7 +651,7 @@ def process_impl_section(identifiers, src_items,
         const.name for const in identifiers.constants if const.is_macro
     ]
 
-    parser = Parser(identifiers)
+    parser = Parser(identifiers, signature_registry=signature_registry)
 
     for item in src_iter:
         if not isinstance(item, (PreprocessorDirective, Code)):
@@ -668,11 +669,12 @@ def process_impl_section(identifiers, src_items,
 
 
 def build_subroutine_entity(
-        region: SrcRegion,
-        prologue: Optional[SrcRegion]=None,
-        *,
-        config: AstCreateConfig = AstCreateConfig()
-    ):
+    region: SrcRegion,
+    prologue: Optional[SrcRegion]=None,
+    *,
+    config: AstCreateConfig = AstCreateConfig(),
+    signature_registry=None
+):
     if prologue is None:
         prologue_directives = []
     else:
@@ -703,7 +705,8 @@ def build_subroutine_entity(
     # go through src_items[last_declaration_index+1:] and match up with
     # subroutine_nodes.execution_node
     impl_section = process_impl_section(
-        identifier_spec, src_items[last_declaration_index+1:], subroutine_nodes
+        identifier_spec, src_items[last_declaration_index+1:], subroutine_nodes,
+        signature_registry=signature_registry
     )
 
     return SubroutineEntity(
@@ -715,33 +718,3 @@ def build_subroutine_entity(
         impl_section = impl_section,
         endroutine_stmt = endroutine_stmt
     )
-
-
-"""
-def consistent_scalar_arr_prop(
-        arg: Union[Constant, Variable, "ArgDescr"],
-        prop: ScalarArrayProp,
-        ignore_shape_specifics = True
-    ):
-    # we just care about rank matches (exact shape matches are harder!)
-    assert ignore_shape_specifics
-
-    if isinstance(arg, Constant):
-        return prop.is_scalar
-    elif isinstance(arg, Variable):
-        array_spec = arg.array_spec
-        if array_spec is None:
-            return prop.is_scalar:
-        elif prop.is_scalar:
-            return False
-        return prop.rank == array_spec.rank
-    elif isinstance(arg, ArgDescr):
-        if prop.is_scalar:
-            return arg.prop.is_scalar
-        elif arg.prop.is_scalar:
-            return False
-        return prop.rank == arg.prop.rank
-    else:
-        raise TypeError("arg has unexpected type")
-"""
-

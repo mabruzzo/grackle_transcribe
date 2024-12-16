@@ -131,6 +131,10 @@ class ArgList:
         assert self.left.string == '(' and self.right.string == ')'
         _check_delim_sequence(self.seq, lambda e: e.string == ',')
 
+    def n_args(self):
+        # number of arguments in the argument list
+        return sum(divmod(len(self.seq), 2))
+
     def iter_contents(self):
         yield self.left
         yield from self.seq

@@ -48,16 +48,16 @@ def _build_gaussj_g_sig():
 
 def _parse_signatures(fname, *, verbose=False):
     if verbose:
-        print(fname)
+        print('->', fname)
     with open(fname, 'r') as f:
-        provider = LineProvider(f)
+        provider = LineProvider(f, fname = fname)
         it = get_source_regions(provider)
         for region in it:
             if not region.is_routine:
                 continue
             subroutine = build_subroutine_entity(region, it.prologue)
             if verbose:
-                print(f"{subroutine.name}, "
+                print(f"  |-->{subroutine.name}, "
                       f"n_args: {len(subroutine.arguments)} "
                       f"n_local_vars: {len(subroutine.variables)}")
             yield subroutine.subroutine_signature()

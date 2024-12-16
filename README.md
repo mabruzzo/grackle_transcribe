@@ -58,7 +58,7 @@ This tool assumes that some tweaks have been applied to Grackle in order to ease
 You need to generate a C-header that declare C function-signatures for all fortran subroutines. From the root of this repository, invoke:
 
 ```sh
-python declare_fortran_signatures.py --grackle-src-dir=/path/to/grackle/src/clib
+python transcribe.py declarations --grackle-src-dir=/path/to/grackle/src/clib
 ```
 
 An example of the transcribed file can be found [here](https://pastebin.com/qFf2bKK2).
@@ -70,7 +70,7 @@ Then you can use the ``transcribe.py`` script to generate a source and header fi
 Here we provide 2 quick examples of invocations (jump to the next section for more sophisticated examples -- we also show some examples of the results).
 
 ```sh
-python transcribe.py \
+python transcribe.py convert \
     --grackle-src-file=/path/to/grackle/src/clib/solve_rate_cool_g.F \
     --use-C-linkage
 ```
@@ -78,7 +78,7 @@ python transcribe.py \
 OR
 
 ```sh
-python transcribe.py \
+python transcribe.py convert \
     --grackle-src-file=/path/to/grackle/src/clib/cool_multi_time_g.F \
     --use-C-linkage
 ```
@@ -103,7 +103,7 @@ With this information, ``transcribe.py``:
 Here are 2 examples 
 
 ```sh
-python transcribe.py \
+python transcribe.py convert \
     --grackle-src-file=path/to/src/clib/solve_rate_cool_g.F \
     --use-C-linkage \
     --fn-call-loc=path/to/src/clib/solve_chemistry.c:246:716 \
@@ -119,7 +119,7 @@ Here's are links to the resulting [source file](https://pastebin.com/bATxZL8D) a
 OR
 
 ```sh
-python transcribe.py \
+python transcribe.py convert \
     --grackle-src-file=path/to/src/clib/cool_multi_time_g.F \
     --use-C-linkage \
     --fn-call-loc=path/to/src/clib/calculate_cooling_time.c:213:542 \

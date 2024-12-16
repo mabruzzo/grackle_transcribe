@@ -21,12 +21,20 @@ class Variable(NamedTuple):
     @property
     def is_array(self): return self.array_spec is not None
 
+    @property
+    def rank(self):
+        return getattr(self.array_spec, 'rank', None)
+
 class Constant(NamedTuple):
     name: str
     type: Type
     is_macro: bool
     decl_section_index: int # the index of the object used for declarations
     # in the future, we might want to define a value when using a macro
+
+    @property
+    def rank(self):
+        return None
 
 
 class IdentifierSpec:

@@ -122,7 +122,11 @@ class SubroutineSignature:
     @property
     def arguments(self): return tuple(self._arg_map.values())
 
+    @property
     def arguments_iter(self): return self._arg_map.values()
+
+    def n_args(self):
+        return len(self._arg_map)
 
     def lookup_arg(self, key):
         key = key.casefold()

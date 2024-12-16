@@ -114,7 +114,7 @@ def c_like_fn_signature(subroutine, identifier_model = None,
 
     arg_list = []
     if c_fn_call_info is None:
-        for i, arg in enumerate(subroutine.arguments_iter()):
+        for i, arg in enumerate(subroutine.arguments_iter):
             arg_list.append(_arglist_entry(arg))
         local_args = None
     else:
@@ -500,7 +500,7 @@ extern "C" {
 
 def transcribe(in_fname, out_f, prolog = None, epilog = None,
                extern_header_fname = None, use_C_linkage = True,
-               fncall_inspect_conf=None):
+               fncall_inspect_conf=None, signature_registry = None):
     """
     This does the heavy lifting of transcribing the first routine in
     ``in_fname`` and writing it to ``out_f``.

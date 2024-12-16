@@ -5,7 +5,7 @@ from .identifiers import(
 )
 
 from .src_model import (
-    Code, PreprocessorDirective, SrcItem,
+    Code, PreprocessorDirective, SrcItem, Origin
 )
 
 # I would like to avoid this blind importing, but is the only practical way
@@ -22,14 +22,26 @@ from .token import (
 )
 
 from functools import partial
+from typing import Optional, Union, TYPE_CHECKING
+import warnings
+
+if TYPE_CHECKING:
+    from .subroutine_sig import SubroutineSignature
 
 def is_itr_exhausted(itr):
     return bool(itr) == False
 
 class Parser:
 
-    def __init__(self, identifier_ctx = None):
+    def __init__(
+        self,
+        identifier_ctx: IdentifierSpec = None,
+        signature_registry: dict[str, 'SubroutineSignature'] = None
+    ):
+        if signature_registry is not None:
+            assert identifier_ctx is not None
         self.identifier_ctx = identifier_ctx
+        self.signature_registry = signature_registry
 
     def _validate_identifier(self, identifier_name, require_array_dim=None):
         if self.identifier_ctx is None:
@@ -62,27 +74,22 @@ class Parser:
             )
         return None
 
-    def _parse_delimited(self, token_stream, addressof=False):
+    def _parse_delimited(self, token_stream):
         tmp = self._parse_expr(token_stream)
-        if addressof:
-            seq = [AddressOfExpr(tmp)]
-        else:
-            seq = [tmp]
+        seq = [tmp]
         count = 1
 
         while self._match_ttype(',', token_stream, consume=False) is not None:
             seq.append(self._match_ttype(',', token_stream))
             tmp = self._parse_expr(token_stream)
-            if addressof:
-                tmp = AddressOfExpr(tmp)
             seq.append(tmp)
             count+=1
 
         return seq
 
-    def _parse_arg_list(self, token_stream, addressof=False):
+    def _parse_arg_list(self, token_stream):
         l = self._match_ttype('(', token_stream, require_match=True)
-        seq = self._parse_delimited(token_stream, addressof=addressof)
+        seq = self._parse_delimited(token_stream)
         r = self._match_ttype(')', token_stream, require_match=True)
         return ArgList(left=l, seq=seq, right=r)
 
@@ -251,14 +258,7 @@ class Parser:
         elif next_tok.type == Keyword.DO:
             out = self.parse_do_stmt(token_stream)
         elif next_tok.type == Keyword.CALL:
-            out = CallStmt(
-                src=token_stream.src,
-                call_tok=next(token_stream),
-                subroutine=self._match_ttype(
-                    "arbitrary-name", token_stream, require_match=True
-                ),
-                arg_l = self._parse_arg_list(token_stream, addressof=True)
-            )
+            out = self.parse_call_stmt(token_stream) 
         elif next_tok.type == Keyword.WRITE:
             out = self.parse_write_stmt(token_stream)
         elif next_tok.type == Keyword.GOTO:
@@ -345,6 +345,53 @@ class Parser:
         klass = ArrayAssignStmt if is_array_op else ScalarAssignStmt
         return klass(
             src=token_stream.src, lvalue=lval, assign_tok=assign_tok, rvalue=rval
+        )
+
+    def parse_call_stmt(self, token_stream):
+        call_tok = next(token_stream)
+        subroutine = self._match_ttype(
+            "arbitrary-name", token_stream, require_match=True
+        )
+        nominal_arg_l = self._parse_arg_list(token_stream)
+
+        sig = None
+        if self.signature_registry is not None:
+
+            key = subroutine.string.casefold()
+            try:
+                sig = self.signature_registry[key]
+            except KeyError:
+                warnings.warn(
+                    f"the called subroutine, {key!r}, doesn't have a known "
+                    "signature"
+                )
+
+        if sig is not None:
+            assert_call_consistent_with_signature(
+               sig=sig,
+               call=nominal_arg_l,
+               identifier_spec=self.identifier_ctx,
+               origin=token_stream.src.origin,
+               only_basic_consistency=True
+            )
+
+        # if we ever want to support calls to functions that accept arguments
+        # by value, we will need to replace AddressOfExpr with a more detailed
+        # alternative based off the corresponding argument from the signature
+        arg_l = ArgList(
+            left=nominal_arg_l.left,
+            seq=tuple(
+                e if getattr(e,'string',None) == ',' else AddressOfExpr(e)
+                for e in nominal_arg_l.seq
+            ),
+            right=nominal_arg_l.right
+        )
+        
+        return CallStmt(
+            src=token_stream.src,
+            call_tok=call_tok,
+            subroutine=subroutine,
+            arg_l = arg_l
         )
 
     def parse_if_stmt(self, token_stream):
@@ -458,7 +505,7 @@ class Parser:
                 tokens[name] = self._match_ttype(expected, **kw)
 
         if token_stream.peek().string != '(':
-            output_list = self._parse_delimited(token_stream, addressof=False)
+            output_list = self._parse_delimited(token_stream)
         else:
             list_toks = {
                 'outer_l_tok'    : self._match_ttype('(', **kw),
@@ -501,3 +548,110 @@ class TokenStream:
     def peek(self, *args):
         return self._peekable.peek(*args)
 
+
+def assert_call_consistent_with_signature(
+    sig: 'SubroutineSig',
+    call: Union[CallStmt, ArgList],
+    identifier_spec: IdentifierSpec,
+    origin: Optional[Origin] = None,
+    only_basic_consistency: bool = True
+):
+
+    if isinstance(call, CallStmt):
+        assert origin is None
+        arg_l = call.arg_l
+        expect_wrapped = True
+    elif isinstance(call, ArgList):
+        assert origin is not None
+        arg_l = call
+        expect_wrapped = False
+    else:
+        raise TypeError()
+
+    fname = '<file-path>' if origin.fname is None else origin.fname
+    msg_prefix = f"Call to {sig.name!r} @ {fname}:{origin.lineno}:"
+
+    if arg_l.n_args() != sig.n_args():
+        raise ValueError(
+            f"{msg_prefix} passes {arg_l.n_args()} arguments, rather than the "
+            f"expected {sig.n_args()} arguments"
+        )
+
+    literal_argpacks = []
+    complex_argpacks = []
+    def _filtered_argpack(sig, arg_l):
+        argpack_it = enumerate( zip(sig.arguments_iter, arg_l.get_args()) )
+        for arg_index, (sig_arg, call_arg) in argpack_it:
+            if isinstance(call_arg, AddressOfExpr):
+                # it's ok if expect_wrapped == False
+                call_arg = call_arg.wrapped
+            elif expect_wrapped:
+                raise RuntimeError(
+                    "Something went wrong. We expected the ArgList instance "
+                    "to hold wrapper AddressOfExpr instances"
+                )
+
+            new_pack = (arg_index, (sig_arg, call_arg))
+            if isinstance(call_arg, (ArrayAccess, IdentifierExpr)):
+                yield new_pack
+            else:
+                if isinstance(call_arg, LiteralExpr):
+                    literal_argpacks.append(new_pack)
+                    descr = f'the literal, `{call_arg.token.string}`'
+                else:
+                    complex_argpacks.append(new_pack)
+                    tmp = compressed_str_from_Expr(call_arg)
+                    descr = f'a complex expression, `{tmp}`'
+                warnings.warn(
+                    f"{msg_prefix}\n"
+                    f"-> argument number {arg_index+1}, {sig_arg.name!r}"
+                    f"-> passed {descr}"
+                )
+
+    # let's find all pairs
+    if not only_basic_consistency:
+        raise RuntimeError(
+            "We have not implemented functionality to compare array shapes "
+            "(this is significantly more difficult than just testing type and "
+            "dimensionality!)"
+        )
+        # this would probably involve an iterative approach!
+    else:
+        for arg_index, (sig_arg, call_arg) in _filtered_argpack(sig, arg_l):
+            sigarg_summary = (sig_arg.type, sig_arg.prop.rank)
+            if isinstance(call_arg, IdentifierExpr):
+                identifier = identifier_spec[call_arg.token.string]
+                callarg_summary = (identifier.type, identifier.rank)
+            else:
+                assert isinstance(call_arg, ArrayAccess)
+                identifier = identifier_spec[call_arg.array_name.token.string]
+                callarg_summary = (identifier.type, None)
+
+            if sigarg_summary != callarg_summary:
+                descr = []
+                for t,rank in [sigarg_summary, callarg_summary]:
+                    if rank is None:
+                        descr.append(f"a scalar of type {t}")
+                    else:
+                        descr.append(f"a {rank}D array of type {t}")
+                callarg_str = compressed_str_from_Expr(call_arg)
+
+                if (
+                    (sigarg_summary[0] in [Type.gr_float, Type.f64]) and 
+                    (callarg_summary[0] in [Type.gr_float, Type.f64]) and
+                    (callarg_summary[1:] == sigarg_summary[1:])
+                ):
+                    warnings.warn(
+                        f"{msg_prefix}\n"
+                        f"-> gr_float issue @ argument # {arg_index+1}\n"
+                        f"-> expect: `{sig_arg.name}`, {descr[0]}\n"
+                        f"-> receive: `{callarg_str}`, {descr[1]}"
+                    )
+                    continue
+
+                raise RuntimeError(
+                    f"{msg_prefix}\n"
+                    f"-> at argument # {arg_index+1}\n"
+                    f"-> expect:  `{sig_arg.name}`, {descr[0]}\n"
+                    f"-> receive: `{callarg_str}`, {descr[1]}"
+                )
