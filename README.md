@@ -35,7 +35,7 @@ pip install -e .
 
 # Using the tool
 
-This tool has been designed to work with a particular branch of Grackle that can be found [here](https://github.com/mabruzzo/grackle/tree/gen2024-dev). This branch is called `gen2024-dev` (some additional details are provided at the top of its README.
+This tool has been designed to work with a particular branch of Grackle that can be found [here](https://github.com/mabruzzo/grackle/tree/gen2024-transcribe). This branch is called `gen2024-transcribe` (some additional details are provided at the top of its README).
 
 The most important change made in this branch is that a custom ``MASK_TYPE`` type has replaced nearly every occurence of ``logical``.
 

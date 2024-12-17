@@ -49,13 +49,6 @@ def add_gracklesrc_opt(parser, src_file_opt, required = False):
 
     adder(flag, action="store", required=required, help=help)
 
-
-def add_gracklesrcdir_arg(parser, required = False):
-    # TODO: remove this function
-    # for compatability reasons, this wraps add_gracklesrc_opt
-    add_gracklesrc_opt(parser, src_file_opt=False, required=required)
-
-
 def indented_fmt(items, indent = '  ', width = 80, subsequent_indent=None):
     # we can't use textwrap because we want to ensure that the type
     # declaration and argname are on the same line

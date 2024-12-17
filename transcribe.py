@@ -101,9 +101,7 @@ parser_convert.set_defaults(fn=main_convert)
 # ------------------
 from grackle_transcribe.signature_registry import build_signature_registry
 from grackle_transcribe.translation_writer import c_like_fn_signature
-from grackle_transcribe.utils import (
-    add_gracklesrcdir_arg, _valid_fortran_fname
-)
+from grackle_transcribe.utils import _valid_fortran_fname
 from grackle_transcribe.src_model import get_source_regions, LineProvider
 
 parser_analyze = subparsers.add_parser(
@@ -124,7 +122,10 @@ def main_analyze(args):
 
     with os.scandir(args.grackle_src_dir) as it:
         for entry in it:
-            if entry.name == 'interpolators_g.F':
+            if entry.name in ['interpolators_g.F', 'lookup_cool_rates0d.F']:
+                # lookup_cool_rates0d.F does a number of sketchy things
+                # (in terms of passing scalars into subroutines)
+                print(f"skipping {entry.name}")
                 continue
             elif _valid_fortran_fname(entry.name):
                 print("reading file:", entry.name)
