@@ -8,30 +8,30 @@ from .utils import _valid_fortran_fname
 
 import os
 
-def _build_interpolate_sig(ndim):
-    assert 1 <= ndim
-    assert ndim <= 5
-
-    input_args, gridPar_args, dgridPar_args = [], [], []
-    args = []
-    for i in range(1, ndim+1):
-        args.append(
-            ArgDescr(f"input{i}", Type.f64, ScalarArrayProp.Scalar())
-        )
-    args.append(
-        ArgDescr("gridDim", Type.i64, ScalarArrayProp.GenericArray(1))
-    )
-    for i in range(1, ndim+1):
-        args += [
-            ArgDescr(f"gridPar{i}", Type.f64, ScalarArrayProp.GenericArray(1)),
-            ArgDescr(f"dgridPar{i}", Type.f64, ScalarArrayProp.Scalar())
-        ]
-    args += [
-        ArgDescr("dataSize", Type.i64, ScalarArrayProp.Scalar()),
-        ArgDescr("dataField", Type.f64, ScalarArrayProp.GenericArray(1)),
-        ArgDescr("value", Type.f64, ScalarArrayProp.Scalar())
-    ]
-    return SubroutineSignature(f"interpolate_{ndim}d_g", tuple(args))
+#def _build_interpolate_sig(ndim):
+#    assert 1 <= ndim
+#    assert ndim <= 5
+#
+#    input_args, gridPar_args, dgridPar_args = [], [], []
+#    args = []
+#    for i in range(1, ndim+1):
+#        args.append(
+#            ArgDescr(f"input{i}", Type.f64, ScalarArrayProp.Scalar())
+#        )
+#    args.append(
+#        ArgDescr("gridDim", Type.i64, ScalarArrayProp.GenericArray(1))
+#    )
+#    for i in range(1, ndim+1):
+#        args += [
+#            ArgDescr(f"gridPar{i}", Type.f64, ScalarArrayProp.GenericArray(1)),
+#            ArgDescr(f"dgridPar{i}", Type.f64, ScalarArrayProp.Scalar())
+#        ]
+#    args += [
+#        ArgDescr("dataSize", Type.i64, ScalarArrayProp.Scalar()),
+#        ArgDescr("dataField", Type.f64, ScalarArrayProp.GenericArray(1)),
+#        ArgDescr("value", Type.f64, ScalarArrayProp.Scalar())
+#    ]
+#    return SubroutineSignature(f"interpolate_{ndim}d_g", tuple(args))
 
 def _build_gaussj_g_sig():
     # we are going to recycle n_ref a few times since it's immutable
@@ -69,16 +69,7 @@ def build_signature_registry(src_dir=None, verbose = False):
     if pairs is not None:
         with os.scandir(src_dir) as it:
             for entry in it:
-                if entry.name == 'interpolators_g.F':
-                    signatures = (
-                        _build_interpolate_sig(1),
-                        _build_interpolate_sig(2),
-                        _build_interpolate_sig(3),
-                        #skipping over interpolate_3dz_g
-                        _build_interpolate_sig(4),
-                        _build_interpolate_sig(5)
-                    )
-                elif entry.name == 'gaussj_g.F':
+                if entry.name == 'gaussj_g.F':
                     signatures = (_build_gaussj_g_sig(),)
                 elif _valid_fortran_fname(entry.name):
                     signatures = tuple(

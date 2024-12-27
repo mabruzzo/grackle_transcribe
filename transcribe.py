@@ -122,7 +122,7 @@ def main_analyze(args):
 
     with os.scandir(args.grackle_src_dir) as it:
         for entry in it:
-            if entry.name in ['interpolators_g.F', 'lookup_cool_rates0d.F']:
+            if entry.name in ['lookup_cool_rates0d.F']:
                 # lookup_cool_rates0d.F does a number of sketchy things
                 # (in terms of passing scalars into subroutines)
                 print(f"skipping {entry.name}")
@@ -140,7 +140,7 @@ def main_analyze(args):
                             it.prologue,
                             signature_registry=sig_registry
                         )
-                    print('  |-->', subroutine.name)
+                        print('  |-->', subroutine.name)
 
 parser_analyze.set_defaults(fn=main_analyze)
 

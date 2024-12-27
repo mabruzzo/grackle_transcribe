@@ -19,8 +19,7 @@ def index_non_space(s, pos = _DUMMY, end = _DUMMY, *, dflt = _DUMMY):
         raise ValueError("non whitespace not found")
     return dflt
 
-_bad_fnames = ('cool1d_cloudy_old_tables_g.F',
-               'calc_grain_size_increment_1d.F',
+_bad_fnames = ('calc_grain_size_increment_1d.F',
                'gaussj_g.F')
 
 def _valid_fortran_fname(fname):
