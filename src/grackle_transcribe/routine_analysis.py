@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from enum import Enum, auto
-from typing import Union
+from typing import Union, NamedTuple
 
 from .identifiers import IdentifierSpec
 from .lineno_search import LinenoSearchResult # purely for typing purposes
@@ -167,4 +167,74 @@ def analyze_routine(target: Union[SubroutineEntity, LinenoSearchResult]):
     for entry in entry_itr:
         vis.dispatch_visit(entry)
     return vis.info_map
+
+# the idea here is that we record the usage of all routines
+# ---------------------------------------------------------
+from .subroutine_sig import SubroutineArgRef
+
+@dataclass(frozen=True, slots=True)
+class SubroutineLocalVarRef:
+    subroutine: str
+    var: str
+
+    def __init__(self, *, subroutine, var):
+        assert isinstance(subroutine, str) and len(subroutine) > 0
+        assert isinstance(var, str) and len(var) > 0
+        object.__setattr__(self, 'subroutine', subroutine.casefold())
+        object.__setattr__(self, 'var', var.casefold())
+
+    def __str__(self):
+        return f"{self.subroutine}${self.var}"
+
+@dataclass(frozen = True, slots=True)
+class ArbitraryAccess:
+    var: SubroutineArgRef | SubroutineLocalVarRef
+
+    def __str__(self):
+        return f"{self.var!s}[ELEM]"
+
+@dataclass
+class VarLink:
+    parts: list[SubroutineLocalVarRef | SubroutineArgRef | ArbitraryAccess]
+
+    def __len__(self):
+        return len(parts)
+    def append(self, v):
+        return self.parts.append(v)
+    def __str__(self):
+        return '|'.join(str(e) for e in self.parts)
+
+
+@dataclass
+class SubroutineCallInspectionVisitor(EntryVisitor):
+    fortran_identifier_spec: IdentifierSpec
+
+    def __init__(self, fortran_identifier_spec):
+        super().__init__(ignore_unknown=False)
+        self.fortran_identifier_spec = fortran_identifier_spec
+        
+
+    def visit_WhitespaceLines(self, entry): pass
+    def visit_Comment(self, entry): pass
+    def visit_PreprocessorDirective(self, entry): pass
+    def visit_OMPDirective(self, entry): pass
+    def visit_Declaration(self, entry): pass
+
+    def visit_Stmt(self, entry):
+        args = []
+        if not isinstance(entry, CallStmt):
+            return None
+        for arg in entry.arg_l.get_args():
+            pass
+        #for 
+        #    arg_l
+
+
+    def visit_ControlConstruct(self, entry):
+        for (condition, contents) in entry.condition_contents_pairs:
+            self.dispatch_visit(condition)
+            for content_entry in contents:
+                self.dispatch_visit(content_entry)
+        self.dispatch_visit(entry.end)
+
 

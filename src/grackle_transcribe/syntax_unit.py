@@ -59,6 +59,10 @@ class AddressOfExpr(Expr):
     # put in by hand by us for calls to procedures (will make translation a
     # lot easier)
     wrapped: Expr
+    # for right now, arg_name, is just used for bookkeeping purposes. In the
+    # future, we could probably leverage this to handle scenarios where we pass
+    # values by value vs by reference
+    arg_name: Optional['SubroutineArgRef']
 
     def iter_contents(self): yield self.wrapped
 

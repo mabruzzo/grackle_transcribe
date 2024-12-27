@@ -21,6 +21,9 @@ class SubroutineArgRef:
         object.__setattr__(self, 'subroutine', subroutine.casefold())
         object.__setattr__(self, 'arg', arg.casefold())
 
+    def __str__(self):
+        return f'{self.subroutine}%{self.arg}'
+
 
 class _UnknownAxLenType(Enum):
     UNKNOWN_AX_LEN = auto()

@@ -21,7 +21,9 @@ from .token import (
     compressed_concat_tokens
 )
 
+from enum import auto, Enum
 from functools import partial
+import itertools
 from typing import Optional, Union, TYPE_CHECKING
 import warnings
 
@@ -31,17 +33,28 @@ if TYPE_CHECKING:
 def is_itr_exhausted(itr):
     return bool(itr) == False
 
+class ArgConsistencyReq(Enum):
+    NONE = auto()
+    BASIC = auto()
+
 class Parser:
 
     def __init__(
         self,
         identifier_ctx: IdentifierSpec = None,
-        signature_registry: dict[str, 'SubroutineSignature'] = None
+        signature_registry: dict[str, 'SubroutineSignature'] = None,
+        arg_consistency_req: Optional[ArgConsistencyReq] = None
     ):
         if signature_registry is not None:
             assert identifier_ctx is not None
         self.identifier_ctx = identifier_ctx
         self.signature_registry = signature_registry
+
+        if arg_consistency_req is None and signature_registry is None:
+            arg_consistency_req = ArgConsistencyReq.NONE
+        elif arg_consistency_req is None:
+            arg_consistency_req = ArgConsistencyReq.BASIC
+        self.arg_consistency_req = arg_consistency_req
 
     def _validate_identifier(self, identifier_name, require_array_dim=None):
         if self.identifier_ctx is None:
@@ -366,24 +379,31 @@ class Parser:
                     "signature"
                 )
 
-        if sig is not None:
+        if sig is None:
+            sigref_it = itertools.repeat(None)
+        else:
             assert_call_consistent_with_signature(
                sig=sig,
                call=nominal_arg_l,
                identifier_spec=self.identifier_ctx,
                origin=token_stream.src.origin,
-               only_basic_consistency=True
+               consistency_req=self.arg_consistency_req
             )
+            sigref_it = iter(sig.arguments_iter)
+
+        new_seq = []
+        for e in nominal_arg_l.seq:
+            if getattr(e, 'string', None) == ',':
+                new_seq.append(e)
+            else:
+                new_seq.append(AddressOfExpr(e, next(sigref_it)))
 
         # if we ever want to support calls to functions that accept arguments
         # by value, we will need to replace AddressOfExpr with a more detailed
         # alternative based off the corresponding argument from the signature
         arg_l = ArgList(
             left=nominal_arg_l.left,
-            seq=tuple(
-                e if getattr(e,'string',None) == ',' else AddressOfExpr(e)
-                for e in nominal_arg_l.seq
-            ),
+            seq=tuple(new_seq),
             right=nominal_arg_l.right
         )
         
@@ -554,7 +574,7 @@ def assert_call_consistent_with_signature(
     call: Union[CallStmt, ArgList],
     identifier_spec: IdentifierSpec,
     origin: Optional[Origin] = None,
-    only_basic_consistency: bool = True
+    consistency_req: ArgConsistencyReq = ArgConsistencyReq.BASIC
 ):
 
     if isinstance(call, CallStmt):
@@ -609,7 +629,9 @@ def assert_call_consistent_with_signature(
                 )
 
     # let's find all pairs
-    if not only_basic_consistency:
+    if consistency_req == ArgConsistencyReq.NONE:
+        return None
+    elif consistency_req != ArgConsistencyReq.BASIC:
         raise RuntimeError(
             "We have not implemented functionality to compare array shapes "
             "(this is significantly more difficult than just testing type and "
