@@ -101,8 +101,13 @@ def _get_line_parts(line_chunk):
     if m:
         source_code = m.group('src')
         parts[-1] = m.group('name')
+    elif line_chunk == 'Kind = Stop':
+        source_code = None
+    elif ' = ' in parts[-1]:
+        raise AssertionError(
+            f"problem parsing {line_chunk!r} : ' = ' not in {parts[-1]!r}"
+        )
     else:
-        assert ' = ' not in parts[-1]
         source_code = None
 
     # sanity check!

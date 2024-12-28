@@ -72,6 +72,9 @@ class BuiltinFn(_TokenEnum):
     mod   = (auto(), [r"mod"])
     int   = (auto(), [r"int"])
     sqrt  = (auto(), [r"sqrt"])
+    acos  = (auto(), [r"acos"])
+    cos   = (auto(), [r"cos"])
+
 
 class BuiltinProcedure(_TokenEnum):
     allocate   = (auto(), [r'allocate'])
@@ -166,6 +169,7 @@ class Keyword(_TokenEnum):
     ENDIF      = (auto(), [r"end[ \t]*if"],   True)
     ENDDO      = (auto(), [r"end[ \t]*do"],   True)
     ENDROUTINE = (auto(), [r"end"],           True)
+    STOP       = (auto(), [r"stop"],          True)
 
     WRITE = (auto(), [r"write"], False)
 
