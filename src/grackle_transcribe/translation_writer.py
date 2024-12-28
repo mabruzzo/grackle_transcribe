@@ -268,6 +268,10 @@ class CppTranslator(EntryVisitor):
     def visit_OMPDirective(self, entry):
         if entry.kind is OMPDirectiveKind.INCLUDE_OMP:
             pass # don't write anything!
+        elif entry.kind is OMPDirectiveKind.END_PARALLEL_DO:
+            self.block_level-=1
+            self._write_translated_line('}  // OMP_PRAGMA("omp parallel")')
+
         elif entry.kind is OMPDirectiveKind.CRITICAL:
             self._write_translated_line('OMP_PRAGMA_CRITICAL')
             self._write_translated_line('{')
@@ -276,7 +280,32 @@ class CppTranslator(EntryVisitor):
             self.block_level-=1
             self._write_translated_line('}')
         else:
-            self._passthrough_SrcItem(entry)
+            parallel_do = entry.kind is OMPDirectiveKind.PARALLEL_DO
+            if not parallel_do:
+                parallel_do = 'parallel do' in '\n'.join(entry.lines)
+
+            if parallel_do:
+                # we aren't going to try to automatically handle the private clause,
+                # but incrementing the block level essentially provides room for us to
+                # manually create copies that were previously in the private clause
+                # essentially provides room for us to initialize copies of all the
+                # 
+                self._passthrough_SrcItem(entry)
+
+                self._write_translated_line(
+                    f'{_TODO_PREFIX} TODO_USE: OMP_PRAGMA("omp parallel")'
+                )
+                self._write_translated_line('{')
+                self.block_level+=1
+                self._write_translated_line(
+                    f'{_TODO_PREFIX} TODO: move relevant variable declarations to '
+                    'here to replace OMP private'
+                )
+                self._write_translated_line(
+                    f'{_TODO_PREFIX} TODO_USE: OMP_PRAGMA("omp for")'
+                )
+            else:
+                self._passthrough_SrcItem(entry)
 
 
 
