@@ -155,6 +155,10 @@ parser_declarations = subparsers.add_parser(
 add_gracklesrc_opt(parser_declarations, False, required=True)
 
 _PROLOG = """\
+/// @file fortran_func_decls.h
+/// @brief Header file defining forward declaring function signatures of
+///        Fortran subroutines have not been ported to C++ yet.
+
 #ifndef FORTRAN_FN_DECLARATIONS_HPP
 #define FORTRAN_FN_DECLARATIONS_HPP
 

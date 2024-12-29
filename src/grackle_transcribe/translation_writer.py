@@ -1,6 +1,10 @@
 import more_itertools
 
+from dataclasses import dataclass
+from functools import partialmethod
 from itertools import cycle
+import os
+import re
 import textwrap
 
 
@@ -285,11 +289,10 @@ class CppTranslator(EntryVisitor):
                 parallel_do = 'parallel do' in '\n'.join(entry.lines)
 
             if parallel_do:
-                # we aren't going to try to automatically handle the private clause,
-                # but incrementing the block level essentially provides room for us to
-                # manually create copies that were previously in the private clause
-                # essentially provides room for us to initialize copies of all the
-                # 
+                # we aren't going to try to automatically handle the private
+                # clause, but incrementing the block level essentially provides
+                # room for us to manually create copies that were previously 
+                # in the private clause
                 self._passthrough_SrcItem(entry)
 
                 self._write_translated_line(
@@ -502,34 +505,140 @@ class CppTranslator(EntryVisitor):
         else:
             self.dispatch_visit(entry.end)
 
-def _write_declaration_header(fname, signature, use_C_linkage):
-    # writes out a header file whose sole purpose is to provide a declaration
-    # that can be included in C files
-    with open(fname, 'w') as f:
-        f.write("""\
-#include "grackle.h"             // gr_float
-#include "fortran_func_decls.h"  // gr_mask_int
+def _header_guard_name(fname):
+    basename = os.path.basename(fname)
+    return re.sub(r"[-\.\s]", "_", "my_file-cpp.h").upper()
 
+def _common_prolog_text(fname, fn_name):
+    return f"""\
+// See LICENSE file for license and copyright information
+
+/// @file {os.path.basename(fname)}
+/// @brief Declares signature of {fn_name}
+
+// This file was initially generated automatically during conversion of the
+// {fn_name} function from FORTRAN to C++
+
+"""
+
+_IMPLEMENTATION_HEADERS = """\
+#include <cstdio>
+#include <vector>
+
+#include "grackle.h"
+#include "fortran_func_decls.h"
+#include "utils-cpp.hpp"
+"""
+
+def _is_header_fname(fname):
+    _, ext = os.path.splitext(fname)
+    return ext == '.h' or ext == '.hpp'
+
+@dataclass(frozen=True)
+class BoilerPlateWriter:
+    """
+    Helps write boilerplate prologs and epilogs to a C++ file source file
+
+    (This is only a dataclass for mutability purposes)
+    """
+    prolog_parts: list[str]
+    epilog_parts: list[str]
+
+    def _write(self, f, write_prolog):
+        parts = self.prolog_parts if write_prolog else self.epilog_parts
+        for part in parts:
+            f.write(part)
+
+    write_prolog = partialmethod(_write, write_prolog=True)
+    write_epilog = partialmethod(_write, write_prolog=False)
+
+    @classmethod
+    def implementation_file(cls, fname:str, use_C_linkage: bool, fn_name: str,
+                            extern_header_fname = None):
+        inline_header = _is_header_fname(fname)
+        if not inline_header:
+            assert os.path.splitext(fname)[1] in ['.C', '.cpp']
+
+        prolog, epilog = [], []
+        prolog.append(_common_prolog_text(fname, fn_name))
+
+        if inline_header:
+            header_guard_name = _header_guard_name(fname)
+            assert not use_C_linkage
+            assert extern_header_fname is None
+            prolog.append(f"""\
+#ifndef {header_guard_name}
+#define {header_guard_name}
+
+{_IMPLEMENTATION_HEADERS}""")
+
+            epilog.append(f"""
+#endif /* {self.header_guard_name} */
 """)
-        if use_C_linkage:
-            f.write("""\
+        else:
+            prolog.append(_IMPLEMENTATION_HEADERS)
+            if extern_header_fname is not None:
+                prolog.append(f'\n#include "{extern_header_fname}"\n\n')
+
+            if use_C_linkage:
+                prolog.append("""\
 #ifdef __cplusplus
 extern "C" {
 #endif /* __cplusplus */
 
 """)
-        f.write(signature)
-        f.write(';\n')
-        if use_C_linkage:
-            f.write("""\
+                epilog.append("""
 #ifdef __cplusplus
 }  // extern "C"
 #endif /* __cplusplus */
 """)
 
-def transcribe(in_fname, out_f, prolog = None, epilog = None,
-               extern_header_fname = None, use_C_linkage = True,
-               fncall_inspect_conf=None, signature_registry = None):
+        return cls(prolog_parts = prolog, epilog_parts = epilog)
+
+    @classmethod
+    def declaration_hdr(cls, fname: str, use_C_linkage: bool, fn_name: str):
+        header_guard_name = _header_guard_name(fname)
+        prolog, epilog = [], []
+        prolog.append(_common_prolog_text(fname, fn_name))
+        prolog.append(f"""\
+#ifndef {header_guard_name}
+#define {header_guard_name}
+
+#include "grackle.h"             // gr_float
+#include "fortran_func_decls.h"  // gr_mask_int
+
+""")
+        if use_C_linkage:
+            prolog.append("""\
+#ifdef __cplusplus
+extern "C" {
+#endif /* __cplusplus */
+// the following function can be called from C or C++
+
+""")
+            epilog.append("""
+#ifdef __cplusplus
+}  // extern "C"
+#endif /* __cplusplus */
+""")
+        epilog.append(f"""
+#endif /* {header_guard_name} */
+""")
+        return cls(prolog_parts = prolog, epilog_parts = epilog)
+
+def _write_declaration_header(fname, signature, use_C_linkage, fn_name):
+    writer = BoilerPlateWriter.declaration_hdr(
+        fname=fname, use_C_linkage=use_C_linkage, fn_name = fn_name
+    )
+    with open(fname, 'w') as f:
+        writer.write_prolog(f)
+        f.write(signature)
+        f.write(';\n')
+        writer.write_epilog(f)
+
+def transcribe(in_fname, out_f, extern_header_fname = None,
+               use_C_linkage = True, fncall_inspect_conf=None,
+               signature_registry = None):
     """
     This does the heavy lifting of transcribing the first routine in
     ``in_fname`` and writing it to ``out_f``.
@@ -537,35 +646,13 @@ def transcribe(in_fname, out_f, prolog = None, epilog = None,
     If extern_header_fname is provided, we will also write a header file that
     can be used to declare this functionality.
     """
+    out_fname = out_f.name
+    def writer(arg):
+        out_f.write(f'{arg}\n')
 
     with open(in_fname, "r") as in_f:
         provider = LineProvider(in_f, fname = in_fname)
         it = get_source_regions(provider)
-
-        if prolog is not None:
-            out_f.write(prolog)
-
-        # handle outputs
-        def writer(arg):
-            out_f.write(f'{arg}\n')
-
-        out_f.write("""\
-#include <cstdio>
-#include <vector>
-
-#include "grackle.h"
-#include "fortran_func_decls.h"
-#include "utils-cpp.hpp"
-""")
-        if extern_header_fname is not None:
-            writer(f'#include "{extern_header_fname}"')
-
-        writer("")
-        writer("//_// TODO: ADD ANY OTHER INCLUDE DIRECTIVES")
-        writer("")
-
-        if use_C_linkage:
-            writer('extern "C" {')
 
         for region in it:
             if not region.is_routine:
@@ -583,7 +670,6 @@ def transcribe(in_fname, out_f, prolog = None, epilog = None,
                     local_struct_vars=fncall_inspect_conf.local_struct_vars
                 )
 
-            # TODO: pass in c_fn_call_info as an argument
             identifier_model = _IdentifierModel(
                 subroutine.identifiers,
                 identifier_analysis_map=props,
@@ -617,10 +703,20 @@ def transcribe(in_fname, out_f, prolog = None, epilog = None,
 
             if extern_header_fname is not None:
                 _write_declaration_header(
-                    extern_header_fname, signature, use_C_linkage
+                    fname=extern_header_fname,
+                    signature=signature,
+                    use_C_linkage=use_C_linkage,
+                    fn_name=subroutine.name
                 )
 
+            boiler_plate_writer = BoilerPlateWriter.implementation_file(
+                fname=out_fname,
+                use_C_linkage=use_C_linkage,
+                fn_name = subroutine.name,
+                extern_header_fname = extern_header_fname
+            )
 
+            boiler_plate_writer.write_prolog(out_f)
             writer(signature)
             writer("{")
 
@@ -633,13 +729,7 @@ def transcribe(in_fname, out_f, prolog = None, epilog = None,
 
             writer("}")
             break
-        if use_C_linkage:
-            writer("")
-            writer('}  // extern "C"')
-
-        if epilog is not None:
-            writer("")
-            out_f.write(epilog)
+        boiler_plate_writer.write_epilog(out_f)
         return
 
 

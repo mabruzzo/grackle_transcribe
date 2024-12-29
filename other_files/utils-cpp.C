@@ -1,3 +1,7 @@
+/// @file utils.C
+/// @brief Implements various C++ utilities used in the routines transcribed
+///        from Fortran
+
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>

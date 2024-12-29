@@ -1,6 +1,6 @@
 /// @file utils.hpp
 /// @brief Header file defining various C++ utilities used in the routines
-///     transcribed from Fortran
+///        transcribed from Fortran
 
 #ifndef UTILS_HPP
 #define UTILS_HPP
