@@ -10,7 +10,8 @@ from .parser import (
     ArrayAssignStmt,
     ScalarAssignStmt,
     CallStmt,
-    iterate_true_contents
+    iterate_true_contents,
+    AddressOfExpr
 )
 from .subroutine_entity import SubroutineEntity
 from .writer import (
@@ -188,10 +189,18 @@ class SubroutineLocalVarRef:
 
 @dataclass(frozen = True, slots=True)
 class ArbitraryAccess:
-    var: SubroutineArgRef | SubroutineLocalVarRef
+    wrapped: SubroutineArgRef | SubroutineLocalVarRef
 
     def __str__(self):
-        return f"{self.var!s}[ELEM]"
+        return f"{self.wrapped!s}[ELEM]"
+
+    @property
+    def subroutine(self):
+        return self.wrapped.subroutine
+
+    @property
+    def var(self):
+        return self.wrapped.var
 
 @dataclass
 class VarLink:
@@ -208,11 +217,14 @@ class VarLink:
 @dataclass
 class SubroutineCallInspectionVisitor(EntryVisitor):
     fortran_identifier_spec: IdentifierSpec
+    subroutine_name: str
+    call_props : dict[tuple[str,int],tuple[list,list]]
 
-    def __init__(self, fortran_identifier_spec):
+    def __init__(self, fortran_identifier_spec, subroutine_name):
         super().__init__(ignore_unknown=False)
         self.fortran_identifier_spec = fortran_identifier_spec
-        
+        self.subroutine_name = subroutine_name
+        self.call_props = {}
 
     def visit_WhitespaceLines(self, entry): pass
     def visit_Comment(self, entry): pass
@@ -224,11 +236,35 @@ class SubroutineCallInspectionVisitor(EntryVisitor):
         args = []
         if not isinstance(entry, CallStmt):
             return None
-        for arg in entry.arg_l.get_args():
-            pass
-        #for 
-        #    arg_l
 
+        def _get_local_ref(call_arg):
+            if isinstance(call_arg, IdentifierExpr):
+                name = call_arg.token.string
+                elemof=False
+            elif isinstance(call_arg, ArrayAccess):
+                name = call_arg.array_name.token.string
+                elemof=True
+            else:
+                return None
+
+            if self.fortran_identifier_spec.is_arg(name):
+                tmp = SubroutineArgRef(subroutine=self.subroutine_name, arg=name)
+            else:
+                tmp = SubroutineLocalVarRef(subroutine=self.subroutine_name, var=name)
+            return ArbitraryAccess(tmp) if elemof else tmp
+
+        simple_args = []
+        nonsimple_sigargs = []
+        for arg in entry.arg_l.get_args():
+            assert isinstance(arg, AddressOfExpr)
+            call_ref = _get_local_ref(arg.wrapped)
+            arg_ref = arg.arg_name
+            if call_ref is None:
+                nonsimple_sigargs.append(arg_ref)
+            else:
+                simple_args.append(VarLink(parts=[call_ref,arg_ref]))
+        key = (entry.subroutine.string.casefold(), entry.src.origin.lineno)
+        self.call_props[key] = (simple_args, nonsimple_sigargs)
 
     def visit_ControlConstruct(self, entry):
         for (condition, contents) in entry.condition_contents_pairs:
@@ -238,3 +274,21 @@ class SubroutineCallInspectionVisitor(EntryVisitor):
         self.dispatch_visit(entry.end)
 
 
+def analyze_call_stmts(subroutine: SubroutineEntity):
+    """
+    extract information about variables used in a given subroutine or in a
+    subsection of a subroutine
+
+    Parameters
+    ----------
+    subroutine : SubroutineEntity
+        The subroutine entity that we are analyzing.
+    """
+    assert isinstance(subroutine, SubroutineEntity)
+    vis = SubroutineCallInspectionVisitor(
+        fortran_identifier_spec=subroutine.identifiers,
+        subroutine_name=subroutine.name
+    )
+    for entry in subroutine.impl_section:
+        vis.dispatch_visit(entry)
+    return vis.call_props

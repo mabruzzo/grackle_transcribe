@@ -40,7 +40,8 @@ from .parser import (
     Parser,
     UncategorizedStmt,
     TokenStream,
-    stmt_has_single_tok_type
+    stmt_has_single_tok_type,
+    ArgConsistencyReq
 )
 
 from dataclasses import dataclass
@@ -630,7 +631,8 @@ def _process_impl_items(parser, first_item, src_items):
 
 def process_impl_section(identifiers, src_items,
                          subroutine_nodes, *,
-                         signature_registry=None):
+                         signature_registry=None,
+                         arg_consistency_req=None):
     """
     Returns
     -------
@@ -673,7 +675,8 @@ def build_subroutine_entity(
     prologue: Optional[SrcRegion]=None,
     *,
     config: AstCreateConfig = AstCreateConfig(),
-    signature_registry=None
+    signature_registry=None,
+    arg_consistency_req: Optional[ArgConsistencyReq]=None
 ):
     if prologue is None:
         prologue_directives = []
@@ -705,8 +708,11 @@ def build_subroutine_entity(
     # go through src_items[last_declaration_index+1:] and match up with
     # subroutine_nodes.execution_node
     impl_section = process_impl_section(
-        identifier_spec, src_items[last_declaration_index+1:], subroutine_nodes,
-        signature_registry=signature_registry
+        identifier_spec,
+        src_items[last_declaration_index+1:],
+        subroutine_nodes,
+        signature_registry=signature_registry,
+        arg_consistency_req=arg_consistency_req
     )
 
     return SubroutineEntity(

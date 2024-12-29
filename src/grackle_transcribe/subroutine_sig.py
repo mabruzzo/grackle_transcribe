@@ -24,6 +24,10 @@ class SubroutineArgRef:
     def __str__(self):
         return f'{self.subroutine}%{self.arg}'
 
+    @property
+    def var(self):
+        return self.arg
+
 
 class _UnknownAxLenType(Enum):
     UNKNOWN_AX_LEN = auto()

@@ -8,6 +8,7 @@ from grackle_transcribe.utils import (
 from grackle_transcribe.clike_parse.tool import _add_fnsig_simplifier_optgrp
 
 import argparse
+from contextlib import ExitStack
 import os
 import sys
 
@@ -102,13 +103,60 @@ parser_convert.set_defaults(fn=main_convert)
 from grackle_transcribe.signature_registry import build_signature_registry
 from grackle_transcribe.translation_writer import c_like_fn_signature
 from grackle_transcribe.utils import _valid_fortran_fname
+from grackle_transcribe.routine_analysis import analyze_call_stmts
 from grackle_transcribe.src_model import get_source_regions, LineProvider
+from grackle_transcribe.parser import ArgConsistencyReq
 
 parser_analyze = subparsers.add_parser(
     "analyze",
     help="check if existing fortran code has any obvious issues"
 )
 add_gracklesrc_opt(parser_analyze, False, required=True)
+parser_analyze.add_argument(
+    '--ignore-argtype-consistency', action='store_true'
+)
+parser_analyze_grp = parser_analyze.add_mutually_exclusive_group()
+parser_analyze_grp.add_argument(
+    '--analyze-call-all',
+    action='store_true',
+    help="Analyze call-statement variable naming of all files"
+)
+parser_analyze_grp.add_argument(
+    '--analyze-call',
+    action='store',
+    default=None,
+    help="Analyze call-statement variable naming in specified file"
+)
+
+def analyze_argnames_in_calls(subroutine):
+    print("    |-->analyzing variable names in calls")
+    indent = "         "
+    iindent = f"{indent} *"
+    call_props = analyze_call_stmts(subroutine)
+    for (name, lineno), (simple_args, nonsimple_sigargs) in call_props.items():
+        print(indent,f"call to `{name}` on line {lineno}")
+        mismatch_count = 0
+        for varlink in simple_args:
+            varname = varlink.parts[0].var
+            mismatch = any(varname != part.var for part in varlink.parts)
+            if mismatch and 'interpolate_' in varlink.parts[-1].subroutine:
+                mismatch = False
+
+            if mismatch and mismatch_count == 0:
+                print(indent, "printing name arg-name mismatches:")
+            if mismatch:
+                mismatch_count += 1
+                print(iindent, f"{varlink!s}")
+        if mismatch_count == 0 and len(nonsimple_sigargs) == 0:
+            print(indent, "names of all args match!")
+        else:
+            print(
+                indent,
+                f"{mismatch_count} mismatches, "
+                f"{len(simple_args) - mismatch_count} matches, "
+                f"{len(nonsimple_sigargs)} unhandled complex comparisons"
+            )
+
 
 def main_analyze(args):
     print("parsing the registry:")
@@ -116,31 +164,56 @@ def main_analyze(args):
     sig_registry = build_signature_registry(
         src_dir=args.grackle_src_dir, verbose=True
     )
+    if args.ignore_argtype_consistency:
+        arg_consistency_req = ArgConsistencyReq.NONE
+        forbid_lookup_cool_rates0d=False
+    else:
+        arg_consistency_req = ArgConsistencyReq.BASIC
+        forbid_lookup_cool_rates0d=True
+
     print()
     print("Reparsing all routines and cross-checking subroutine calls against "
           "the registry")
 
+    def analyze_argnames_in_calls_for_file(path):
+        if args.analyze_call_all:
+            return True
+        elif args.analyze_call is None:
+            return False
+        return os.path.abspath(path) == os.path.abspath(args.analyze_call)
+
     with os.scandir(args.grackle_src_dir) as it:
         for entry in it:
-            if entry.name in ['lookup_cool_rates0d.F']:
+            name, path = os.path.basename(entry), entry
+
+            if name == 'lookup_cool_rates0d.F' and forbid_lookup_cool_rates0d:
                 # lookup_cool_rates0d.F does a number of sketchy things
                 # (in terms of passing scalars into subroutines)
-                print(f"skipping {entry.name}")
+                print(f"skipping {name}")
                 continue
-            elif _valid_fortran_fname(entry.name):
-                print("reading file:", entry.name)
-                with open(entry.path, 'r') as f:
-                    provider = LineProvider(f, fname = entry.path)
-                    it = get_source_regions(provider)
-                    for region in it:
+            elif _valid_fortran_fname(name):
+
+                print("reading file:", name)
+                with open(path, 'r') as f:
+                    provider = LineProvider(f, fname = path)
+                    region_it = get_source_regions(provider)
+                    for region in region_it:
                         if not region.is_routine:
                             continue
                         subroutine = build_subroutine_entity(
                             region,
-                            it.prologue,
-                            signature_registry=sig_registry
+                            region_it.prologue,
+                            signature_registry=sig_registry,
+                            arg_consistency_req=arg_consistency_req
                         )
                         print('  |-->', subroutine.name)
+
+                        if analyze_argnames_in_calls_for_file(path):
+                            analyze_argnames_in_calls(subroutine)
+            
+
+
+
 
 parser_analyze.set_defaults(fn=main_analyze)
 

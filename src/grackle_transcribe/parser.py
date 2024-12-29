@@ -27,8 +27,7 @@ import itertools
 from typing import Optional, Union, TYPE_CHECKING
 import warnings
 
-if TYPE_CHECKING:
-    from .subroutine_sig import SubroutineSignature
+from .subroutine_sig import SubroutineSignature, SubroutineArgRef
 
 def is_itr_exhausted(itr):
     return bool(itr) == False
@@ -396,7 +395,15 @@ class Parser:
             if getattr(e, 'string', None) == ',':
                 new_seq.append(e)
             else:
-                new_seq.append(AddressOfExpr(e, next(sigref_it)))
+                arg_ref_tmp = next(sigref_it)
+                if arg_ref_tmp is None:
+                    arg_ref = None
+                else:
+                    arg_ref = SubroutineArgRef(
+                        subroutine=sig.name, arg=arg_ref_tmp.name
+                    )
+
+                new_seq.append(AddressOfExpr(e, arg_ref))
 
         # if we ever want to support calls to functions that accept arguments
         # by value, we will need to replace AddressOfExpr with a more detailed
