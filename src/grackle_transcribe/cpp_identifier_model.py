@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Union, NamedTuple, Optional
 
-from .clike_parse.tool import StructMemberArg, CFnCallArgListInfo
+from .clike_parse.tool import StructMemberVar, CStructTranscribeInfo
 from .identifiers import Constant, Variable
 from .parser import IdentifierExpr
 from .routine_analysis import VariableInfo
@@ -163,7 +163,7 @@ class CppIdentifierInfo:
     wrapped_key: Optional[str]
     # following attr can only be provided when string is None. In that case,
     # the identifer corresponds to a member of a struct
-    struct_mem_arg: Optional[StructMemberArg] = None
+    struct_mem_arg: Optional[StructMemberVar] = None
 
     def __post_init__(self):
         if self.string is None:
@@ -181,7 +181,7 @@ def _prep_cpp_identifiers(
         is_arg : bool,
         fortran_identifier: Union[Variable, Constant],
         var_info: VariableInfo,
-        struct_mem_arg: Optional[StructMemberArg] = None
+        struct_mem_arg: Optional[StructMemberVar] = None
     ):
 
     is_const = isinstance(fortran_identifier, Constant)
@@ -257,8 +257,11 @@ def _prep_cpp_identifiers(
 
 _UNINITIALIZED = object()
 
-def _build_identifier_map(fortran_identifier_spec, identifier_analysis_map,
-                          c_fn_call_info: Optional[CFnCallArgListInfo]=None ):
+def _build_identifier_map(
+    fortran_identifier_spec,
+    identifier_analysis_map,
+    c_struct_transcribe_info: Optional[CStructTranscribeInfo]=None
+):
     fortran_to_cpp_map = {}
     cpp_identifier_pairs = []
 
@@ -279,13 +282,15 @@ def _build_identifier_map(fortran_identifier_spec, identifier_analysis_map,
             arg_index = None
         is_arg = (arg_index is not None)
 
-        # if the identifier is an argument, and the c_fn_call_info object (if
-        # present) indicates that the argument is commonly called by passing a
-        # struct member, we take some special steps (essentially we assume that
-        # the struct is passed instead of this argument)
-        if is_arg and c_fn_call_info is not None:
-            struct_mem_arg = c_fn_call_info.arg_l[arg_index]
-            if not isinstance(struct_mem_arg, StructMemberArg):
+        # if the identifier is an argument, and the c_struct_transcribe_info
+        # object (if present) indicates that the argument is commonly called by
+        # passing a struct member, we take some special steps (essentially we
+        # assume that the struct is passed instead of this argument)
+        if is_arg and c_struct_transcribe_info is not None:
+            struct_mem_arg = c_struct_transcribe_info.try_get_structmembervar(
+                arg_index
+            )
+            if not isinstance(struct_mem_arg, StructMemberVar):
                 struct_mem_arg = None
         else:
             struct_mem_arg = None
@@ -341,16 +346,16 @@ class _IdentifierModel:
         self,
         fortran_identifier_spec,
         identifier_analysis_map = None,
-        c_fn_call_info = None
+        c_struct_transcribe_info = None
     ):
         self.fortran_identifier_spec = fortran_identifier_spec
         if identifier_analysis_map is None:
             identifier_analysis_map = {}
-            assert c_fn_call_info is None
+            assert c_struct_transcribe_info is None
         fortran_to_cpp_map, cpp_identifiers = _build_identifier_map(
             fortran_identifier_spec,
             identifier_analysis_map,
-            c_fn_call_info=c_fn_call_info
+            c_struct_transcribe_info=c_struct_transcribe_info
         )
         self.fortran_to_cpp_key = fortran_to_cpp_map
         self.cpp_identifiers = cpp_identifiers
@@ -438,7 +443,7 @@ class _IdentifierModel:
                         return var_name if need_ptr else f'(*{var_name:s})'
                     else:
                         assert var_name is None
-                        return struct_mem_arg.accessexpr_in_fn(need_ptr)
+                        return struct_mem_arg.to_string(need_ptr)
 
             case IdentifierUsage.ArrAddress:
                 if (arr_ndim is not None) and (arr_ndim != modifier.array_rank):

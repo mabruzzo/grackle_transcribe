@@ -1,7 +1,9 @@
+from dataclasses import dataclass
 from enum import Enum
 import itertools
 import os
 import re
+from types import MappingProxyType
 from typing import NamedTuple
 
 class FuncCallLoc(NamedTuple):
@@ -43,8 +45,8 @@ class GrackleStruct(Enum):
     """
     Represents established grackle interface types
 
-    The name (e.g. `GrackleStruct.CHEMISTRY_DATA.value`) is the name known to
-    the c++ compiler.
+    The name (e.g. `GrackleStruct.CHEMISTRY_DATA.full_type_name`) is the name
+    known to the c++ compiler.
 
     The implementation is loosely based on an example from python docs where we
     don't care about the integer values associated with each member
@@ -52,11 +54,36 @@ class GrackleStruct(Enum):
     def __repr__(self):
         return '<%s.%s>' % (self.__class__.__name__, self.name)
 
-    CHEMISTRY_DATA = "chemistry_data"
-    CHEMISTRY_DATA_STORAGE = "chemistry_data_storage"
-    CODE_UNITS = "code_units"
-    GRACKLE_FIELD_DATA = "grackle_field_data"
-    PHOTO_RATE_STORAGE = "photo_rate_storage"
+    def __new__(cls, name, in_grackle_impl_namespace, prefer_pass_by_value):
+        value = len(cls.__members__) + 1
+        obj = object.__new__(cls)
+        obj._value_ = value
+        obj.base_type_name = name
+        if in_grackle_impl_namespace:
+            obj.full_type_name = f"grackle::impl::{name}"
+        else:
+            obj.full_type_name = name
+        obj.prefer_pass_by_value = prefer_pass_by_value
+        return obj
+
+
+    CHEMISTRY_DATA = ("chemistry_data", False, False)
+    CHEMISTRY_DATA_STORAGE = ("chemistry_data_storage", False, False)
+    CODE_UNITS = ("code_units", False, False)
+    GRACKLE_FIELD_DATA = ("grackle_field_data", False, False)
+    PHOTO_RATE_STORAGE = ("photo_rate_storage", False, False)
+
+    # newly-introduced internal data structures:
+    INTERNAL_GR_UNITS = ("InternalGrUnits", False, True)
+    GRAIN_SPECIES_COLLECTION = ("GrainSpeciesCollection", True, True)
+    LOGT_LIN_INTERP_SCRATCH_BUF = ("LogTLinInterpScratchBuf", True, True)
+    COOL_1D_MULTI_SCRATCH_BUF = ("Cool1DMultiScratchBuf", True, True)
+    COOL_HEAT_SCRATCH_BUF = ("CoolHeatScratchBuf", True, True)
+    SPECIES_COLLECTION = ("SpeciesCollection", True, True)
+    COL_REC_RXN_RATE_COLLECTION = ("ColRecRxnRateCollection", True, True)
+    PHOTO_RXN_RATE_COLLECTION = ("PhotoRxnRateCollection", True, True)
+    CHEM_HEATING_RATES = ("ChemHeatingRates", True, True)
+
 
 class LocalStructVar(NamedTuple):
     var_name: str
@@ -107,7 +134,7 @@ def _add_fnsig_simplifier_optgrp(parser):
     )
 
     for member in GrackleStruct:
-        t = member.value
+        t = member.base_type_name
         arg_grp.add_argument(
             f"--{t}_ptr",
             help=f"name of local variable of type `{t}*`", default=None
@@ -116,7 +143,7 @@ def _add_fnsig_simplifier_optgrp(parser):
     def _parse_args(args, dirname=None):
         l = []
         for member in GrackleStruct:
-            attr = f"{member.value}_ptr"
+            attr = f"{member.base_type_name}_ptr"
             var_name, is_ptr = getattr(args,attr), True
             if var_name is not None:
                 if var_name[0] == '&':
@@ -181,59 +208,68 @@ def _extract_args(start_pos, contents):
     )
 
 
-class StructMemberArg(NamedTuple):
+class StructMemberExprDescr(NamedTuple):
     """
-    Represents an argument used in a C call to a subroutine that involves
-    structs.
+    A crude concept, but this essentially describes the relationship between a
+    struct and some kind of member_str
 
-    Using the `arg_str` value returns an equivalent c string. This will specify
-    the address of a scalar or the address of the first element in an array
-    (which may have 1 or more dimensions)
+    The term member_str refers to everything that isn't the top level struct.
+
+    For concreteness, let's consider some examples:
+      - the member_str is "my_integer" in `my_struct1.my_integer`
+      - the member_str is "my_struct1.my_integer" in the following 2 cases:
+        - my_struct2.my_struct1.my_integer
+        - my_struct3->my_struct1.my_integer
+      - the member_str is "my_struct1->my_integer" in the following 2 cases:
+        - my_struct4.my_struct1->my_integer
+        - my_struct4->my_struct1->my_integer
+      - the member str is "data[2]" in `data_wrapper.data[2]`
     """
     struct_varname: str
     member_str: str
-    use_arrow: bool
-    arg_has_addressOf: bool
+    full_expr_is_ptr: bool
 
-
-    def _common(self, use_arrow=True):
-        if use_arrow:
-            return f'{self.struct_varname}->{self.member_str}'
-        else:
-            return f'{self.struct_var}.{self.member_str}'
-
-    def original_arg_str(self):
-        # this is equivalent to the original string
-        if self.arg_has_addressOf:
-            return '&'+self._common(use_arrow=self.use_arrow)
-        return self._common(use_arrow=self.use_arrow)
-
-    def accessexpr_in_fn(self, access_address):
-        """
-        Returns expression to access the value or address of the struct member 
-        for use inside of a function, where `struct_arg` is the name of a
-        function argument that passes the struct as a pointer.
-        """
+    def fmt_string(self, struct_is_pointer, access_address):
+        join = "->" if struct_is_pointer else "."
         if access_address:
-            pre,suf = ('&', '') if self.arg_has_addressOf else ('','')
+            pre,suf = ('&', '') if self.full_expr_is_ptr else ('','')
         else:
-            pre,suf = ('', '') if self.arg_has_addressOf else ('*(', ')')
-        return f'{pre}{self._common(use_arrow=True)}{suf}'
+            pre,suf = ('', '') if self.full_expr_is_ptr else ('*(', ')')
+        return f'{pre}{self.struct_varname}{join}{self.member_str}{suf}'
 
+class StructMemberVar(NamedTuple):
+    """
+    Represents an argument used in a C call to a subroutine that involves
+    structs OR to represent the formatter if a variable used in subroutine
+    being transcribed to C.
+    """
+    struct_is_pointer: bool
+    descr: StructMemberExprDescr
+
+    def to_string(self, access_address):
+        """
+        Returns expression to access the value or address of the struct member
+        """
+        return descr.fmt_string(
+            self.struct_is_pointer, access_address=access_address
+        )
 
 def _mk_matcher(local_struct_var):
     use_arrow = local_struct_var.is_ptr
     memjoin = r'\-\>' if use_arrow else r'\.'
     struct_varname = local_struct_var.var_name
 
-    memstr_pat = r"[a-zA-Z_][a-zA-Z_\d\.]*"
+    identifiertok_pat = r"[a-zA-Z_][a-zA-Z_\d\.]*"
+    memstr_pat = identifiertok_pat
+    index_pat = rf"(?:\d+|{identifiertok_pat}::{identifiertok_pat})"
 
     patterns = []
 
     _main_core_pattern = (
         rf"{struct_varname}\s*{memjoin}\s*"
-        rf"(?P<mem_str>{memstr_pat}\s*(\[\s*\d+\s*\])?)"
+        rf"(?P<mem_str>{memstr_pat}\s*(\[\s*{index_pat}\s*\])?)"
     )
+    print(_main_core_pattern)
 
     _alt_core_pattern = (
         rf"{struct_varname}\s*{memjoin}\s*"
@@ -258,17 +294,25 @@ def _mk_matcher(local_struct_var):
                 else:
                     member_str = d["mem_str"]
                     arg_has_addressOf = s.startswith('&')
-                return StructMemberArg(
+                # Because this is being extracted from a call to a Fortran
+                # Routine, in a dialect of Fortran where all arguments are
+                # always passed by reference, the full expression specified by
+                # s must ALWAYS specify the address of a scalar or the address
+                # of the first element in an array (with an arbitrary number of
+                # dimensions).
+                # -> This let's us make the following inference:
+                full_expr_is_ptr = not arg_has_addressOf
+
+                struct_member_descr = StructMemberExprDescr(
                     struct_varname = struct_varname,
                     member_str = member_str,
-                    use_arrow = use_arrow,
-                    arg_has_addressOf=arg_has_addressOf
+                    full_expr_is_ptr = full_expr_is_ptr
+                )
+                return StructMemberVar(
+                    struct_is_pointer = use_arrow,
+                    descr = struct_member_descr
                 )
     return _main_builder
-
-class CFnCallArgListInfo(NamedTuple):
-    arg_l: list[str | StructMemberArg]
-    employed_struct_vars: list[LocalStructVar]
 
 def parse_fn_call(fn_call_loc, fn_name, local_struct_vars= []):
     """
@@ -312,6 +356,7 @@ def parse_fn_call(fn_call_loc, fn_name, local_struct_vars= []):
                     employed_struct_vars.add(local_struct_vars[struct_var_id])
                     break
             else:
+                print(f"not in any struct: {arg!r}")
                 results.append(arg)
     except:
         raise RuntimeError(
@@ -322,8 +367,42 @@ def parse_fn_call(fn_call_loc, fn_name, local_struct_vars= []):
             f" -> {contents.splitlines(True)[0] + '...'!r}"
         )
 
+    return (results, list(employed_struct_vars))
 
-    return CFnCallArgListInfo(results, list(employed_struct_vars))
+@dataclass(frozen=True)
+class CStructTranscribeInfo:
+    # contains information related to C structs to use during transcription
+    orig_arg_l: list[str | StructMemberVar]
+    _structvar_useptr_map: MappingProxyType[str, tuple[LocalStructVar,bool]]
+
+    def get_structprop_useptr_pair(self, structvar_name):
+        return self._structvar_useptr_map[structvar_name]
+
+    def all_structvar_useptr_pairs(self):
+        return list(self._structvar_useptr_map.values())
+
+    def try_get_structmembervar(self, arg_index):
+        tmp = self.orig_arg_l[arg_index]
+        if not isinstance(tmp,StructMemberVar):
+            return None
+        _, use_ptr = self._structvar_useptr_map[tmp.descr.struct_varname]
+        return StructMemberVar(use_ptr, tmp.descr)
+
+def get_C_Struct_transcribe_info(fn_call_loc, fn_name, local_struct_vars= []):
+    arg_l, employed_struct_vars = parse_fn_call(
+        fn_call_loc=fn_call_loc,
+        fn_name=fn_name,
+        local_struct_vars=local_struct_vars
+    )
+
+    # in principle, we could make some different choices for whether or not to
+    # use a pointer
+    mapping = {
+        struct_var.var_name : (
+            struct_var, not struct_var.type.prefer_pass_by_value
+        ) for struct_var in employed_struct_vars
+    }
+    return CStructTranscribeInfo(arg_l, MappingProxyType(mapping))
 
 if __name__ == '__main__':
 

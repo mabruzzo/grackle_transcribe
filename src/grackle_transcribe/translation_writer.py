@@ -8,7 +8,7 @@ import re
 import textwrap
 
 
-from .clike_parse.tool import parse_fn_call as parse_clike_fn_call
+from .clike_parse.tool import get_C_Struct_transcribe_info
 from .cpp_identifier_model import (
     IdentifierUsage, _IdentifierModel, _TYPE_MAP,
     ArrInitSpec, get_translated_declaration_lines
@@ -33,8 +33,8 @@ from .subroutine_entity import (
     Declaration, build_subroutine_entity, ControlConstruct, SubroutineEntity
 )
 from .syntax_unit import (
-     IdentifierExpr, LiteralExpr, Standard1TokenStmt, Stmt, UncategorizedStmt,
-     _iterate_tokens, ControlConstructKind, CallStmt
+     ArrayAccess, IdentifierExpr, LiteralExpr, Standard1TokenStmt, Stmt,
+     UncategorizedStmt, _iterate_tokens, ControlConstructKind, CallStmt
 )
 from .translator import (
     _translate_stmt, _get_translated_label, _translate_expr
@@ -72,7 +72,7 @@ def _fmt_function(routine_name, indent, arg_l,
 # refactor in the future?)
 def c_like_fn_signature(subroutine, identifier_model = None,
                         wrapped_by_fortran_name = False,
-                        c_fn_call_info = None):
+                        c_struct_transcribe_info = None):
     """
     Come up with a C-like function signature for a given subroutine
 
@@ -86,19 +86,21 @@ def c_like_fn_signature(subroutine, identifier_model = None,
     wrapped_by_fortran_name: bool, optional
         Whether the function name should be wrapped by the FORTRAN_NAME macro
         to achieve proper name-mangling
-    c_fn_call_info: CFnCallArgListInfo, optional
-        This can be the object returned by `clike_parse.tool.parse_fn_call`,
-        which specifies information about a location where the relevant
-        subroutine is called. When specified, we try to reduce the number of
-        arguments passed into this function and pass in structs instead.
+    c_struct_transcribe_info: CStructTranscribeInfo, optional
+        This can be the object returned by
+        `clike_parse.tool.get_C_Struct_transcribe_info`,
+        which specifies information about what structs to be used when
+        transcribing a function signature. When specified, we try to reduce
+        the number of arguments passed into this function and pass in structs
+        instead.
 
     Returns
     -------
     signature: str
         The translated function signature
     local_fn_call: str or None
-        This is None unless c_fn_call_info is provided. In this case, this
-        should be the new local function call.
+        This is None unless c_struct_transcribe_info is provided. In this case,
+        this should be the new local function call.
     n_args: int
         The number of arguments
     """
@@ -117,18 +119,20 @@ def c_like_fn_signature(subroutine, identifier_model = None,
     indent = '  '
 
     arg_list = []
-    if c_fn_call_info is None:
+    if c_struct_transcribe_info is None:
         for i, arg in enumerate(subroutine.arguments_iter):
             arg_list.append(_arglist_entry(arg))
         local_args = None
     else:
         assert not wrapped_by_fortran_name
         local_args = []
-        assert len(subroutine.arguments) == len(c_fn_call_info.arg_l)
+        n_args = len(subroutine.arguments)
+        assert n_args == len(c_struct_transcribe_info.orig_arg_l)
         # step build up arg_list & local_args using the arguments directly
         # taken from the Fortran subroutine (skipping over all arguments that
         # can be accessed from structs)
-        for arg, local_arg in zip(subroutine.arguments, c_fn_call_info.arg_l):
+        for arg, local_arg in zip(subroutine.arguments,
+                                  c_struct_transcribe_info.orig_arg_l):
             if isinstance(local_arg, str): # preserve the argument
                 arg_list.append(_arglist_entry(arg))
                 local_args.append(local_arg)
@@ -137,12 +141,18 @@ def c_like_fn_signature(subroutine, identifier_model = None,
                      # the struct
         # add any structs as arguments
         l = sorted(
-            c_fn_call_info.employed_struct_vars, key=lambda e: e.type.value
+            c_struct_transcribe_info.all_structvar_useptr_pairs(),
+            key=lambda e: e[0].type.value
         )
-        for struct_var in l:
-            arg_list.append(f'{struct_var.type.value}* {struct_var.var_name}')
-            if struct_var.is_ptr:
+        for struct_var, use_ptr in l:
+            tmp = "*" if use_ptr else ""
+            arg_list.append(
+                f'{struct_var.type.full_type_name}{tmp} {struct_var.var_name}'
+            )
+            if struct_var.is_ptr == use_ptr:
                 local_args.append(struct_var.var_name)
+            elif struct_var.is_ptr:
+                local_args.append(f"*{struct_var.var_name}")
             else:
                 local_args.append(f'&{struct_var.var_name}')
 
@@ -349,18 +359,51 @@ class CppTranslator(EntryVisitor):
             arrspec = identifier.array_spec
             if arrspec.allocatable: assert not is_arg
 
+            def _expr_tostring(expr):
+                if isinstance(expr, LiteralExpr):
+                    return expr.token.string
+                elif isinstance(expr, IdentifierExpr):
+                    return self._cpp_variable_name(
+                        expr, IdentifierUsage.ScalarValue
+                    )
+                return None
+
             axlens = []
+            problem_case = None
             for elem in arrspec.axlens:
                 if arrspec.allocatable:
                     axlens.append(None)
-                elif isinstance(elem, LiteralExpr):
-                    axlens.append(elem.token.string)
-                elif isinstance(elem, IdentifierExpr):
-                    axlens.append(self._cpp_variable_name(
-                        elem, IdentifierUsage.ScalarValue
-                    ))
+                elif (axlen := _expr_tostring(elem)) is not None:
+                    axlens.append(axlen)
+                elif isinstance(elem, ArrayAccess):
+                    # in this case, the current axis length is stored inside
+                    # of a separate array. 
+                    inner_idx_l = list(elem.arg_l.get_args())
+                    inner_idx_str = _expr_tostring(inner_idx_l[0])
+                    #print(
+                    #    f"HANDLING ARRAY DECLARATION for {identifier.name}\n"
+                    #    " -> current axlen is an array access\n"
+                    #    f" -> number of indices: {len(inner_idx_l)}\n"
+                    #    f" -> translated index: {inner_idx_str!r}"
+                    #)
+
+                    if (len(inner_idx_l) != 1) or (inner_idx_str is None):
+                        problem_case = elem
+                        break
+                    inner_array_name = self._cpp_variable_name(
+                        elem.array_name, IdentifierUsage.ArrAccessValue
+                    )
+                    axlens.append(f"{inner_array_name}[{inner_idx_str}-1]")
                 else:
-                    raise RuntimeError("not equipped to handle this case yet")
+                    problem_case = elem
+            if problem_case is not None:
+                raise RuntimeError(
+                    "not currently equipped to translate the length of an "
+                    "array-shape in the declaration of {identifier.name}:\n"
+                    f" -> axlen has type {problem_case.__class__.__name__}\n"
+                    " -> The full representation of the identifier is"
+                    f"{identifier}"
+                )
             return ArrInitSpec(identifier.name,tuple(axlens))
 
         scalar_decls = []
@@ -661,10 +704,10 @@ def transcribe(in_fname, out_f, extern_header_fname = None,
             props = analyze_routine(subroutine)
 
             if fncall_inspect_conf is None:
-                c_fn_call_info = None
+                c_struct_transcribe_info = None
             else:
                 print("Parsing subroutine call-site from C/C++ routine")
-                c_fn_call_info = parse_clike_fn_call(
+                c_struct_transcribe_info = get_C_Struct_transcribe_info(
                     fn_call_loc=fncall_inspect_conf.fn_call_loc,
                     fn_name=subroutine.name.lower(),
                     local_struct_vars=fncall_inspect_conf.local_struct_vars
@@ -673,7 +716,7 @@ def transcribe(in_fname, out_f, extern_header_fname = None,
             identifier_model = _IdentifierModel(
                 subroutine.identifiers,
                 identifier_analysis_map=props,
-                c_fn_call_info=c_fn_call_info
+                c_struct_transcribe_info=c_struct_transcribe_info
             )
 
             translator = CppTranslator(
@@ -681,7 +724,9 @@ def transcribe(in_fname, out_f, extern_header_fname = None,
             )
 
             signature, local_fn_call_str, n_args = c_like_fn_signature(
-                subroutine, identifier_model, c_fn_call_info=c_fn_call_info
+                subroutine,
+                identifier_model,
+                c_struct_transcribe_info=c_struct_transcribe_info
             )
 
             print()
@@ -700,6 +745,7 @@ def transcribe(in_fname, out_f, extern_header_fname = None,
                 print("The function call at the specified location in the C "
                       "file should look like:")
                 print(local_fn_call_str)
+            #raise RuntimeError("EARLY EXIT")
 
             if extern_header_fname is not None:
                 _write_declaration_header(
