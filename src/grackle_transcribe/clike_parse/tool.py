@@ -71,7 +71,7 @@ class GrackleStruct(Enum):
     CHEMISTRY_DATA_STORAGE = ("chemistry_data_storage", False, False)
     CODE_UNITS = ("code_units", False, False)
     GRACKLE_FIELD_DATA = ("grackle_field_data", False, False)
-    PHOTO_RATE_STORAGE = ("photo_rate_storage", False, False)
+    PHOTO_RATE_STORAGE = ("photo_rate_storage", False, True)
 
     # newly-introduced internal data structures:
     INTERNAL_GR_UNITS = ("InternalGrUnits", False, True)
@@ -101,9 +101,21 @@ def _add_fnsig_simplifier_optgrp(parser):
     """
     fn_call_loc_opt, fn_call_loc_attrname = "--fn-call-loc", "fn_call_loc"
 
+    arg_grp = parser.add_argument_group(
+        title = "Fn Arg Simplifier Options",
+        description = (
+            "C/C++ calls to Fortran subroutines in Grackle often involve "
+            "long argument lists where many struct members are passed as "
+            f"separate arguments. The {fn_call_loc_opt} option can be used to "
+            "specify where the subroutine being transcribed is called. The "
+            "arguments can be used to specify the names of local variables "
+            "corresponding that have different struct types. By using this "
+            "information with the arg list, we can reduce the number of "
+            "arguments in the transcribed routine. "
+                    )
+    )
 
-
-    parser.add_argument(
+    arg_grp.add_argument(
         fn_call_loc_opt,
         default = None,
         help = (
@@ -115,17 +127,19 @@ def _add_fnsig_simplifier_optgrp(parser):
         )
     )
 
-    arg_grp = parser.add_argument_group(
-        title = "Fn Arg Simplifier Options",
-        description = (
-            f"C/C++ calls to Fortran subroutines in Grackle often involve "
-            "long argument lists where many struct members are passed as "
-            "separate arguments. The {fn_call_loc_opt} option can be used to "
-            "specify where the subroutine being transcribed is called. The "
-            "arguments can be used to specify the names of local variables "
-            "corresponding that have different struct types. By using this "
-            "information with the arg list, we can reduce the number of "
-            "arguments in the transcribed routine. "
+    _members = {
+        f'{member.base_type_name}_ptr' : member for member in GrackleStruct
+    }
+    _member_l = "[" + ','.join(_members) + "]"
+
+    arg_grp.add_argument(
+        "--var-ptr-pairs",
+        nargs='+',
+        help=(
+            "each argument passed to this option should have the form "
+            "`<varname>,<type>` where <varname> is the name of a local "
+            "variable and <type> is the corresponding type (known types "
+            f"include {_member_l}). "
             "If a local variable corresponds to a stack-allocated instance of "
             "a struct, rather than a pointer, you should specify the "
             "variable name with a leading &. (Note you may need to escape & "
@@ -133,22 +147,22 @@ def _add_fnsig_simplifier_optgrp(parser):
         )
     )
 
-    for member in GrackleStruct:
-        t = member.base_type_name
-        arg_grp.add_argument(
-            f"--{t}_ptr",
-            help=f"name of local variable of type `{t}*`", default=None
-        )
-
     def _parse_args(args, dirname=None):
         l = []
-        for member in GrackleStruct:
-            attr = f"{member.base_type_name}_ptr"
-            var_name, is_ptr = getattr(args,attr), True
-            if var_name is not None:
-                if var_name[0] == '&':
-                    var_name, is_ptr = var_name[1:], False
-                l.append(LocalStructVar(var_name, member, is_ptr))
+
+        pair_l = args.var_ptr_pairs
+        if pair_l is None:
+            pair_l = []
+        for pair_str in pair_l:
+            pair = pair_str.split(',')
+            assert len(pair) == 2
+            var_name, type_str = pair
+            struct_type = _members[type_str]
+            if var_name[0] == '&':
+                var_name, is_ptr = var_name[1:], False
+            else:
+                is_ptr = True
+            l.append(LocalStructVar(var_name, struct_type, is_ptr))
 
         fn_call_loc_cliarg = getattr(args, fn_call_loc_attrname)
         if (fn_call_loc_cliarg is None):
@@ -232,9 +246,9 @@ class StructMemberExprDescr(NamedTuple):
     def fmt_string(self, struct_is_pointer, access_address):
         join = "->" if struct_is_pointer else "."
         if access_address:
-            pre,suf = ('&', '') if self.full_expr_is_ptr else ('','')
+            pre,suf = ('&', '') if not self.full_expr_is_ptr else ('','')
         else:
-            pre,suf = ('', '') if self.full_expr_is_ptr else ('*(', ')')
+            pre,suf = ('', '') if not self.full_expr_is_ptr else ('*(', ')')
         return f'{pre}{self.struct_varname}{join}{self.member_str}{suf}'
 
 class StructMemberVar(NamedTuple):
@@ -250,8 +264,9 @@ class StructMemberVar(NamedTuple):
         """
         Returns expression to access the value or address of the struct member
         """
-        return descr.fmt_string(
-            self.struct_is_pointer, access_address=access_address
+        return self.descr.fmt_string(
+            struct_is_pointer=self.struct_is_pointer,
+            access_address=access_address
         )
 
 def _mk_matcher(local_struct_var):

@@ -453,7 +453,7 @@ class _IdentifierModel:
                 elif modifier.is_pointer():
                     if struct_mem_arg is not None:
                         assert var_name is None
-                        return struct_mem_arg.accessexpr_in_fn(True)
+                        return struct_mem_arg.to_string(True)
                     return var_name
                 elif modifier.is_vector() or modifier.is_view():
                     assert struct_mem_arg is None
@@ -477,7 +477,7 @@ class _IdentifierModel:
                             "member that was originally passed to the "
                             f"subroutine as {struct_mem_arg.original_arg_str}"
                         )
-                    out = struct_mem_arg.accessexpr_in_fn(True)
+                    out = struct_mem_arg.to_string(True)
                     if out[0] == '&':
                         raise RuntimeError()
                     return out

@@ -107,11 +107,11 @@ python transcribe.py convert \
     --grackle-src-file=path/to/src/clib/solve_rate_cool_g.F \
     --use-C-linkage \
     --fn-call-loc=path/to/src/clib/solve_chemistry.c:246:716 \
-    --grackle_field_data_ptr=my_fields \
-    --chemistry_data_ptr=my_chemistry \
-    --chemistry_data_storage_ptr=my_rates \
-    --code_units=my_units \
-    --photo_rate_storage_ptr '&my_uvb_rates'
+    --var-ptr-pairs 'my_fields,grackle_field_data_ptr' \
+        'my_chemistry,chemistry_data_ptr' \
+        'my_rates,chemistry_data_storage_ptr' \
+        '&my_uvb_rates,photo_rate_storage_ptr' \
+        'my_units,code_units_ptr'
 ```
 
 Here's are links to the resulting [source file](https://pastebin.com/bATxZL8D) and [header file](https://pastebin.com/e5WEgeKJ). For reference, [this](https://github.com/mabruzzo/grackle/blob/gen2024-dev/src/clib/solve_rate_cool_g.F) is a link to the original Fortran code that was transcribed.
@@ -123,11 +123,11 @@ python transcribe.py convert \
     --grackle-src-file=path/to/src/clib/cool_multi_time_g.F \
     --use-C-linkage \
     --fn-call-loc=path/to/src/clib/calculate_cooling_time.c:213:542 \
-    --grackle_field_data_ptr=my_fields \
-    --chemistry_data_ptr=my_chemistry \
-    --chemistry_data_storage_ptr=my_rates \
-    --code_units=my_units \
-    --photo_rate_storage_ptr '&my_uvb_rates'
+    --var-ptr-pairs 'my_fields,grackle_field_data_ptr' \
+        'my_chemistry,chemistry_data_ptr' \
+        'my_rates,chemistry_data_storage_ptr' \
+        '&my_uvb_rates,photo_rate_storage_ptr' \
+        'my_units,code_units_ptr'
 ```
 
 Here's are links to the resulting [source file](https://pastebin.com/0y2nekQN) and [header file](https://pastebin.com/myEYZQJi). For reference, [this](https://github.com/mabruzzo/grackle/blob/gen2024-dev/src/clib/cool_multi_time_g.F) is a link to the original Fortran code that was transcribed.
