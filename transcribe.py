@@ -90,7 +90,7 @@ def main_convert(args):
                 transcribe(
                     in_fname, out_f,
                     extern_header_fname = out_header_fname,
-                    use_C_linkage=True,
+                    use_C_linkage=use_C_linkage,
                     fncall_inspect_conf=fncall_inspect_conf,
                     signature_registry=signature_registry
                 )

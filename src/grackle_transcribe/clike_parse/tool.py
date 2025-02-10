@@ -75,6 +75,7 @@ class GrackleStruct(Enum):
 
     # newly-introduced internal data structures:
     INTERNAL_GR_UNITS = ("InternalGrUnits", False, True)
+    INDEX_RANGE = ("IndexRange", False, True)
     GRAIN_SPECIES_COLLECTION = ("GrainSpeciesCollection", True, True)
     LOGT_LIN_INTERP_SCRATCH_BUF = ("LogTLinInterpScratchBuf", True, True)
     COOL_1D_MULTI_SCRATCH_BUF = ("Cool1DMultiScratchBuf", True, True)
@@ -83,6 +84,7 @@ class GrackleStruct(Enum):
     COL_REC_RXN_RATE_COLLECTION = ("ColRecRxnRateCollection", True, True)
     PHOTO_RXN_RATE_COLLECTION = ("PhotoRxnRateCollection", True, True)
     CHEM_HEATING_RATES = ("ChemHeatingRates", True, True)
+    TIME_DERIV_CONTEXT = ("time_deriv_0d::ContextPack", True, True)
 
 
 class LocalStructVar(NamedTuple):
