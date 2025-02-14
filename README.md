@@ -33,7 +33,118 @@ To run this code, you need to clone this repository. Then you should install the
 pip install -e .
 ```
 
-# Using the tool
+# Recommended Control Flow For transcribing a routine
+
+This tool has been designed to work with a particular branch of Grackle that can be found [here](https://github.com/mabruzzo/grackle/tree/gen2024-transcribe).
+
+Suppose that we want to translate `cool1d_multi_g`
+
+## Running the tool
+
+You should invoke someth like the following. In the following, you will need to replace `${GRACKLE_DIR}` with the path to the Grackle clib
+
+```
+python transcribe.py \
+   convert \
+   --grackle-src-file=${GRACKLE_DIR}/cool1d_multi_g.F \
+   --no-use-C-linkage \
+   --fn-call-loc=${GRACKLE_DIR}/fortran_func_wrappers.hpp:84:188 \
+   --preparse-signatures \
+   --var-ptr-pairs 'my_fields,grackle_field_data_ptr' \
+       'my_chemistry,chemistry_data_ptr' \
+       'my_rates,chemistry_data_storage_ptr' \
+       '&idx_range,IndexRange_ptr' \
+       '&my_uvb_rates,photo_rate_storage_ptr' \
+       '&internalu,InternalGrUnits_ptr' \
+       '&grain_temperatures,GrainSpeciesCollection_ptr' \
+       '&logTlininterp_buf,LogTLinInterpScratchBuf_ptr' \
+       '&cool1dmulti_buf,Cool1DMultiScratchBuf_ptr' \
+       '&coolingheating_buf,CoolHeatScratchBuf_ptr' \
+       '&species_tmpdens,SpeciesCollection_ptr' \
+       '&kcr_buf,ColRecRxnRateCollection_ptr' \
+       '&kshield_buf,PhotoRxnRateCollection_ptr' \
+       '&chemheatrates_buf,ChemHeatingRates_ptr' \
+       '&grain_growth_rates,GrainSpeciesCollection_ptr'
+```
+
+This should create a file called `cool1d_multi_g-cpp.C` and a file called `cool1d_multi_g-cpp.h` (really, it should be `cool1d_multi_g-cpp.hpp` since we don't bother giving this C-linkage).
+
+Some added context:
+- To help provide the tool with a hint for how to transcribe the routine, we told it about a place (in ``fortran_func_wrappers.hpp``) where the fortran-version is currently called. Ideally, a given routine should only be tranlated after all of the ``FORTRAN_NAME(<routine_name>)(args...)`` calls have been consolidated behind a single C++ wrapper function.
+- the ``--var-ptr-pairs`` arguments tells the tool about some structs that arguments were extracted from. The tool is smart enough to make those types arguments in the newly generated C++ code (the decision whether to pass structs by pointer or value is handled internally -- we aren't super consistent about doing this. The original fortran code was roughly equivalent to passing all structs by value)
+- in this case, we passed a bunch of names into ``--var-ptr-pairs`` that aren't actually used. That's OK!
+
+When the script is run, information about what the new routine's signature looks like and how it should be called (at the specified location in ``fortran_func_wrappers.hpp``). (Some garbage debugging data might also be printed -- sorry about that!)
+
+## First Steps with the output
+
+1. The first thing you should do is go through the generated source file and find all lines starting with ``//_// PORT:``. These are lines that the tool can't currently translate. You should manually translate these lines yourself (or you add support into the tool for doing this -- if so, please open a PR)
+
+2. You should move the new files into the grackle repository, add the new source-file to CMakeLists.txt and `src/clib/Make.config.objects`. And make sure things compile. (the `-cpp.C` and `-cpp.hpp` suffixes may seem redundant, but don't change that unless you're explicitly willing to check that the new versions don't break the classic build-system). Now might be a good time to commit.
+
+3. Now we need to modify Grackle to actually call the new routine. I would recommend:
+   - removing the old Fortran file from the repository
+   - modifying CMakeLists.txt and `src/clib/Make.config.objects`
+   - and modifying the C++ wrapper so that it forwards onto the newly transcribed version of the function
+   - If the code compiles, I would definitely make a commit
+
+4. Before you do anything else, you should confirm that the integration tests all pass. The tests all use [Grackle's answer testing framework](https://grackle.readthedocs.io/en/latest/Testing.html)
+
+   - If you haven't ever run the tests before you are going to need to checkout a known working older version (probably from the commit just before the ones that you made) and follow these instructions [here](https://grackle.readthedocs.io/en/latest/Testing.html#tests-with-answer-verification). In short, after you checkout the older version, you should be able to run the following from the root of the grackle repository (you may want to do this in a virtual environment):
+
+     ```
+     $ pip uninstall pygrackle
+
+     # the following touch command shouldn't be necessary, but I think it may
+     # help avoid an issue that I once had where pip thinks it can skip
+     # some steps in an editable install
+     $ touch pyproject.toml
+
+     # the -e flag is important
+     $ pip install -e .
+
+     $ GENERATE_PYGRACKLE_TEST_RESULTS=1 pytest src/python/tests/
+     ```
+
+     - The ``test_code_examples`` tests will all be skipped if you followed the above (this is currently unavoidable when you build pygrackle in this particular way and on my list of things to fix).
+
+     - The ``test_model[yt_grackle-0-0]`` test will appear to fail. This is because it expects you to download an example dataset and export the ``YT_DATA_DIR`` environment variable to specify its location. It's on my todo list to make us gracefully skip this test (if you really want to run it, look at the logic in ``.circleci``.
+
+     - All other tests should "pass" (for the answer tests, this just means we succesfully saved the answers)
+
+   - Once you have saved the answers, you should return to the latest commit and run the answer tests again. You should probably follow the documentation.
+     I have reproduced some quick instructions to run the tests down below (if you follow these instructions, the same tests will be skipped and run into issues).
+
+     ```
+     $ pip uninstall pygrackle
+
+     # the following touch command shouldn't be necessary, but I think it may
+     # help avoid an issue that I once had where pip thinks it can skip
+     # some steps in an editable install
+     $ touch pyproject.toml
+
+     # the -e flag is important
+     $ pip install -e .
+
+     # if you preciesly followed the previous snippet, the following shouldn't
+     # be necessary, but better to be safe than sorry. If the following variable
+     # has a value of 1, then you will be overwriting the test answers
+     unset GENERATE_PYGRACKLE_TEST_RESULTS
+
+     $ pytest src/python/tests/
+     ```
+
+At this point, if all tests pass, you are ready to start cleaning the code.
+
+Some general advice:
+- I would err on the side making many atomic commits and smaller well organized PRs
+
+
+# (OLD) Using the tool
+
+> [!IMPORTANT]  
+> This is a little out of date now that we have gotten underway.
+
 
 This tool has been designed to work with a particular branch of Grackle that can be found [here](https://github.com/mabruzzo/grackle/tree/gen2024-transcribe). This branch is called `gen2024-transcribe` (some additional details are provided at the top of its README).
 

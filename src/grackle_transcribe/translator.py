@@ -335,7 +335,7 @@ def _CastExpr_translations(arg, identifier_model, ret_desttype = False):
                    "rkind" : Type.gr_float,
                    "dkind" : Type.f64}
     elif name_tok.string.lower() == "int":
-        mapping = {"4" : Type.i32, "8" : Type.i64}
+        mapping = {"4" : Type.i32, "8" : Type.i64, "dikind": Type.i64}
     else:
         raise NotImplementedError()
     arg_l = arg.arg_l
