@@ -85,6 +85,7 @@ class GrackleStruct(Enum):
     PHOTO_RXN_RATE_COLLECTION = ("PhotoRxnRateCollection", True, True)
     CHEM_HEATING_RATES = ("ChemHeatingRates", True, True)
     TIME_DERIV_CONTEXT = ("time_deriv_0d::ContextPack", True, True)
+    INTERNAL_DUST_PROP_BUF = ("InternalDustPropBuf", True, True)
 
 
 class LocalStructVar(NamedTuple):

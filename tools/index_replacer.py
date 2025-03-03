@@ -65,7 +65,7 @@ def replace_i_with_ip1(in_f, out_f):
 def convert_to_0based_i(in_f, out_f):
 
     full_line_pattern = re.compile(
-        r"for \(ip1 = idx_range\.i_start \+ 1; ip1\<\=\(idx_range\.i_end \+ 1\); ip1\+\+\)\s*\{"
+        r"for \(\s*(int\s+)?ip1 = idx_range\.i_start \+ 1; ip1\<\=\(idx_range\.i_end \+ 1\); ip1\+\+\)\s*\{"
     )
     _nominal_full_line_repl = (
         'for (int i = idx_range.i_start; i < idx_range.i_stop; i++) {\n'
