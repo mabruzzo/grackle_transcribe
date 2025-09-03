@@ -554,10 +554,17 @@ def _header_guard_name(fname):
 
 def _common_prolog_text(fname, fn_name):
     return f"""\
-// See LICENSE file for license and copyright information
-
-/// @file {os.path.basename(fname)}
-/// @brief Declares signature of {fn_name}
+//===----------------------------------------------------------------------===//
+//
+// See the LICENSE file for license and copyright information
+// SPDX-License-Identifier: NCSA AND BSD-3-Clause
+//
+//===----------------------------------------------------------------------===//
+///
+/// @file
+/// Declares signature of {fn_name}
+///
+//===----------------------------------------------------------------------===//
 
 // This file was initially generated automatically during conversion of the
 // {fn_name} function from FORTRAN to C++

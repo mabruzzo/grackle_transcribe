@@ -81,7 +81,7 @@ class GrackleStruct(Enum):
     COOL_1D_MULTI_SCRATCH_BUF = ("Cool1DMultiScratchBuf", True, True)
     COOL_HEAT_SCRATCH_BUF = ("CoolHeatScratchBuf", True, True)
     SPECIES_COLLECTION = ("SpeciesCollection", True, True)
-    COL_REC_RXN_RATE_COLLECTION = ("ColRecRxnRateCollection", True, True)
+    COL_REC_RXN_RATE_COLLECTION = ("CollisionalRxnRateCollection", True, True)
     PHOTO_RXN_RATE_COLLECTION = ("PhotoRxnRateCollection", True, True)
     CHEM_HEATING_RATES = ("ChemHeatingRates", True, True)
     TIME_DERIV_CONTEXT = ("time_deriv_0d::ContextPack", True, True)
